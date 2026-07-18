@@ -1,0 +1,74 @@
+{
+  "id": "com.paca.dashboard",
+  "displayName": "Dashboard",
+  "description": "Adds an at-a-glance project dashboard (task status breakdown, sprint burndown, story points, assignee workload) and a cross-project instance overview on the admin page.",
+  "version": "0.1.0",
+  "permissions": ["db.read", "events.subscribe"],
+  "backend": {
+    "eventSubscriptions": [],
+    "routes": [
+      {
+        "method": "GET",
+        "path": "/projects/:projectId/dashboard/overview",
+        "middlewares": [
+          { "name": "optionalAuthn" },
+          { "name": "requireFreshPassword" },
+          {
+            "name": "requirePermissions",
+            "scope": "project",
+            "permissions": ["projects.read"]
+          }
+        ]
+      },
+      {
+        "method": "GET",
+        "path": "/dashboard/overview-all",
+        "middlewares": [
+          { "name": "optionalAuthn" },
+          { "name": "requireFreshPassword" },
+          {
+            "name": "requirePermissions",
+            "scope": "global",
+            "permissions": ["users.write"]
+          }
+        ]
+      }
+    ]
+  },
+  "frontend": {
+    "remoteEntryUrl": "/plugins/com.paca.dashboard/assets/remoteEntry.js",
+    "extensionPoints": [
+      {
+        "point": "project.page",
+        "component": "ProjectDashboardPage",
+        "order": 5
+      },
+      {
+        "point": "admin.page",
+        "component": "AdminDashboardPage",
+        "order": 5
+      }
+    ],
+    "navItems": [
+      {
+        "scope": "project",
+        "slug": "dashboard",
+        "label": "Dashboard",
+        "icon": "LayoutDashboard",
+        "component": "ProjectDashboardPage",
+        "order": 5
+      },
+      {
+        "scope": "admin",
+        "slug": "dashboard",
+        "label": "Dashboard",
+        "icon": "LayoutDashboard",
+        "component": "AdminDashboardPage",
+        "order": 5
+      }
+    ]
+  },
+  "mcp": {
+    "remoteEntryUrl": "/plugins-mcp/com.paca.dashboard/mcp.js"
+  }
+}

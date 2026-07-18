@@ -1,0 +1,12 @@
+node_modules
+.DS_Store
+dist
+dist-ssr
+*.local
+*.tsbuildinfo
+
+# VS Code settings
+.vscode/
+
+# WebAssembly build artifacts
+*.wasm
