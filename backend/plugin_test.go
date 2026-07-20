@@ -1,9 +1,9 @@
+// plugin_test.go — unit tests for the customizable panel-based dashboard
+// builder across the project/admin/integration scopes.
 package main
 
 import (
 	"encoding/json"
-	"os"
-	"strings"
 	"testing"
 
 	plugin "github.com/Paca-AI/plugin-sdk-go"
@@ -13,6 +13,31 @@ import (
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 const testProjectID = "project-1"
+
+func setupPlugin(t *testing.T) *plugintest.Context {
+	t.Helper()
+	tc := plugintest.NewContext(t)
+
+	tc.DB.SeedRows("dashboard_views",
+		[]string{"id", "project_id", "scope", "host_view_id", "name", "created_by", "created_at", "updated_at"},
+		nil)
+	tc.DB.SeedRows("dashboard_panels",
+		[]string{"id", "dashboard_view_id", "type", "title", "query", "chart_type", "content", "viz_config", "pos_x", "pos_y", "width", "height", "created_by", "created_at", "updated_at"},
+		nil)
+	// Seed a couple of whitelisted tables so guarded-query tests have
+	// something real to select from.
+	tc.DB.SeedRows("tasks", []string{"id", "project_id", "title"}, [][]any{
+		{"task-1", testProjectID, "First task"},
+		{"task-2", testProjectID, "Second task"},
+		{"task-3", "other-project", "Someone else's task"},
+	})
+
+	var p dashboardPlugin
+	if err := p.Init(tc.PluginContext()); err != nil {
+		t.Fatal("Init failed:", err)
+	}
+	return tc
+}
 
 func callerReq() plugintest.Request {
 	return plugintest.Request{
@@ -25,164 +50,544 @@ func callerReq() plugintest.Request {
 	}
 }
 
-// ── Pure-logic unit tests ────────────────────────────────────────────────────
-
-func TestRound1(t *testing.T) {
-	cases := []struct {
-		in   float64
-		want float64
-	}{
-		{0, 0},
-		{33.33333, 33.3},
-		{66.66666, 66.7},
-		{100, 100},
-		{12.05, 12.1}, // half-up rounding
-	}
-	for _, c := range cases {
-		if got := round1(c.in); got != c.want {
-			t.Errorf("round1(%v) = %v, want %v", c.in, got, c.want)
-		}
+// adminReq mirrors what the host actually sends for scope="global" routes:
+// CallerID is always "" because the host only resolves a project_member (and
+// thus a CallerID) for routes whose manifest declares scope="project" — see
+// projectMemberParam in the API's plugin_handler.go. Admin routes have no
+// :projectId to resolve against, so this must stay "" here rather than a
+// fake id, or tests won't exercise the same empty-CallerID path production
+// hits on every admin-view/admin-panel request.
+func adminReq() plugintest.Request {
+	return plugintest.Request{
+		Caller: plugin.CallerIdentity{
+			ProjectID:  "",
+			CallerID:   "",
+			CallerRole: "INSTANCE_ADMIN",
+		},
+		PathParams: map[string]string{},
 	}
 }
 
-func TestScanner_StrAndIntVal(t *testing.T) {
-	cols := []string{"id", "count", "name"}
-	row := []any{"abc", float64(7), nil}
-	sc := newRowScanner(cols, row)
+func withPathParams(req plugintest.Request, params map[string]string) plugintest.Request {
+	m := make(map[string]string, len(req.PathParams)+len(params))
+	for k, v := range req.PathParams {
+		m[k] = v
+	}
+	for k, v := range params {
+		m[k] = v
+	}
+	req.PathParams = m
+	return req
+}
 
-	if got := sc.str("id"); got != "abc" {
-		t.Errorf("str(id) = %q, want %q", got, "abc")
+func decodeData[T any](t *testing.T, res *plugin.Response) T {
+	t.Helper()
+	var env struct {
+		Data T `json:"data"`
 	}
-	if got := sc.intVal("count"); got != 7 {
-		t.Errorf("intVal(count) = %d, want 7", got)
+	if err := json.Unmarshal(res.Body, &env); err != nil {
+		t.Fatalf("failed to decode response body %s: %v", res.BodyString(), err)
 	}
-	if got := sc.str("name"); got != "" {
-		t.Errorf("str(name) = %q, want empty for nil value", got)
+	return env.Data
+}
+
+// ── Project-scope singleton dashboard ────────────────────────────────────────
+
+func TestGetOrCreateProjectView_CreatesOnFirstVisit(t *testing.T) {
+	tc := setupPlugin(t)
+
+	res := tc.Call("GET", "/dashboard/view", callerReq())
+	if res.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d: %s", res.StatusCode, res.BodyString())
 	}
-	if got := sc.intVal("missing_col"); got != 0 {
-		t.Errorf("intVal(missing_col) = %d, want 0", got)
+	view := decodeData[dashboardView](t, res)
+	if view.Scope != "project" {
+		t.Fatalf("expected scope=project, got %q", view.Scope)
+	}
+	if view.ProjectID == nil || *view.ProjectID != testProjectID {
+		t.Fatalf("expected project_id=%s, got %+v", testProjectID, view.ProjectID)
+	}
+	if len(view.Panels) != 0 {
+		t.Fatalf("expected no panels on a fresh dashboard, got %+v", view.Panels)
 	}
 }
 
-// ── Route handler smoke tests ────────────────────────────────────────────────
+func TestGetOrCreateProjectView_IsIdempotent(t *testing.T) {
+	tc := setupPlugin(t)
+
+	first := decodeData[dashboardView](t, tc.Call("GET", "/dashboard/view", callerReq()))
+	second := decodeData[dashboardView](t, tc.Call("GET", "/dashboard/view", callerReq()))
+
+	if first.ID != second.ID {
+		t.Fatalf("expected the same singleton dashboard id across calls, got %s vs %s", first.ID, second.ID)
+	}
+}
+
+// ── Admin-scope singleton dashboard ──────────────────────────────────────────
+
+func TestGetOrCreateAdminView_HasNoProjectID(t *testing.T) {
+	tc := setupPlugin(t)
+
+	res := tc.Call("GET", "/dashboard/admin-view", adminReq())
+	if res.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d: %s", res.StatusCode, res.BodyString())
+	}
+	view := decodeData[dashboardView](t, res)
+	if view.Scope != "admin" {
+		t.Fatalf("expected scope=admin, got %q", view.Scope)
+	}
+	if view.ProjectID != nil {
+		t.Fatalf("expected nil project_id for admin dashboard, got %+v", view.ProjectID)
+	}
+}
+
+// TestGetOrCreateAdminView_EmptyCallerIDStoresNullCreatedBy guards against a
+// regression where an empty req.Caller.CallerID (always the case for this
+// route — see adminReq) was passed straight through as the created_by UUID
+// param instead of being converted to NULL, which fails against real
+// Postgres with "invalid input syntax for type uuid: \"\"" (SQLSTATE 22P02)
+// even though plugintest's InMemoryDB doesn't type-check columns and so
+// can't catch that failure mode itself.
+func TestGetOrCreateAdminView_EmptyCallerIDStoresNullCreatedBy(t *testing.T) {
+	tc := setupPlugin(t)
+
+	res := tc.Call("GET", "/dashboard/admin-view", adminReq())
+	if res.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d: %s", res.StatusCode, res.BodyString())
+	}
+
+	rows := tc.DB.AllRows("dashboard_views")
+	if len(rows) != 1 {
+		t.Fatalf("expected exactly 1 dashboard_views row, got %d", len(rows))
+	}
+	// Columns seeded as: id, project_id, scope, host_view_id, name, created_by, created_at, updated_at.
+	createdBy := rows[0][5]
+	if createdBy != nil {
+		t.Fatalf("expected created_by to be stored as NULL for an empty CallerID, got %#v", createdBy)
+	}
+}
+
+// ── Integration scope: one singleton dashboard per host view ────────────────
+
+const testHostViewID = "host-view-1"
+
+func TestGetOrCreateIntegrationView_CreatesOnFirstVisit(t *testing.T) {
+	tc := setupPlugin(t)
+
+	res := tc.Call("GET", "/dashboard/view/:hostViewId",
+		withPathParams(callerReq(), map[string]string{"hostViewId": testHostViewID}))
+	if res.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d: %s", res.StatusCode, res.BodyString())
+	}
+	view := decodeData[dashboardView](t, res)
+	if view.Scope != "integration" {
+		t.Fatalf("expected scope=integration, got %q", view.Scope)
+	}
+	if view.HostViewID == nil || *view.HostViewID != testHostViewID {
+		t.Fatalf("expected host_view_id=%s, got %+v", testHostViewID, view.HostViewID)
+	}
+	if view.ProjectID == nil || *view.ProjectID != testProjectID {
+		t.Fatalf("expected project_id=%s, got %+v", testProjectID, view.ProjectID)
+	}
+	if len(view.Panels) != 0 {
+		t.Fatalf("expected no panels on a fresh dashboard, got %+v", view.Panels)
+	}
+}
+
+func TestGetOrCreateIntegrationView_IsIdempotentPerHostView(t *testing.T) {
+	tc := setupPlugin(t)
+
+	first := decodeData[dashboardView](t, tc.Call("GET", "/dashboard/view/:hostViewId",
+		withPathParams(callerReq(), map[string]string{"hostViewId": testHostViewID})))
+	second := decodeData[dashboardView](t, tc.Call("GET", "/dashboard/view/:hostViewId",
+		withPathParams(callerReq(), map[string]string{"hostViewId": testHostViewID})))
+
+	if first.ID != second.ID {
+		t.Fatalf("expected the same singleton dashboard id for the same host view, got %s vs %s", first.ID, second.ID)
+	}
+}
+
+func TestGetOrCreateIntegrationView_DifferentHostViewsGetDifferentDashboards(t *testing.T) {
+	tc := setupPlugin(t)
+
+	a := decodeData[dashboardView](t, tc.Call("GET", "/dashboard/view/:hostViewId",
+		withPathParams(callerReq(), map[string]string{"hostViewId": "host-view-a"})))
+	b := decodeData[dashboardView](t, tc.Call("GET", "/dashboard/view/:hostViewId",
+		withPathParams(callerReq(), map[string]string{"hostViewId": "host-view-b"})))
+
+	if a.ID == b.ID {
+		t.Fatalf("expected distinct dashboards for distinct host views, both resolved to %s", a.ID)
+	}
+}
+
+func TestGetOrCreateIntegrationView_MissingHostViewIdRejected(t *testing.T) {
+	tc := setupPlugin(t)
+
+	res := tc.Call("GET", "/dashboard/view/:hostViewId", callerReq())
+	if res.StatusCode != 400 {
+		t.Fatalf("expected 400, got %d: %s", res.StatusCode, res.BodyString())
+	}
+}
+
+func TestGetView_UnknownID(t *testing.T) {
+	tc := setupPlugin(t)
+
+	res := tc.Call("GET", "/dashboard/views/:viewId",
+		withPathParams(callerReq(), map[string]string{"viewId": "nonexistent"}))
+	if res.StatusCode != 404 {
+		t.Fatalf("expected 404, got %d", res.StatusCode)
+	}
+}
+
+func TestGetView_CrossProjectRejected(t *testing.T) {
+	tc := setupPlugin(t)
+
+	created := decodeData[dashboardView](t, tc.Call("GET", "/dashboard/view/:hostViewId",
+		withPathParams(callerReq(), map[string]string{"hostViewId": testHostViewID})))
+
+	otherProjectReq := plugintest.Request{
+		Caller: plugin.CallerIdentity{ProjectID: "project-2", CallerID: "member-2", CallerRole: "PROJECT_MEMBER"},
+	}
+	res := tc.Call("GET", "/dashboard/views/:viewId",
+		withPathParams(otherProjectReq, map[string]string{"viewId": created.ID}))
+	if res.StatusCode != 404 {
+		t.Fatalf("expected 404 (view belongs to a different project), got %d: %s", res.StatusCode, res.BodyString())
+	}
+}
+
+// ── Panel CRUD ────────────────────────────────────────────────────────────────
+
+func TestCreateTextPanel(t *testing.T) {
+	tc := setupPlugin(t)
+	view := decodeData[dashboardView](t, tc.Call("GET", "/dashboard/view", callerReq()))
+
+	res := tc.Call("POST", "/dashboard/views/:viewId/panels",
+		withPathParams(callerReq(), map[string]string{"viewId": view.ID}).
+			WithJSONBody(map[string]any{
+				"type":    "text",
+				"title":   "Notes",
+				"content": "## Sprint notes\n\nEverything is on track.",
+			}))
+	if res.StatusCode != 201 {
+		t.Fatalf("expected 201, got %d: %s", res.StatusCode, res.BodyString())
+	}
+	panel := decodeData[dashboardPanel](t, res)
+	if panel.Type != "text" || panel.Content == nil || *panel.Content == "" {
+		t.Fatalf("unexpected panel: %+v", panel)
+	}
+}
+
+func TestCreatePanel_RejectsMissingChartType(t *testing.T) {
+	tc := setupPlugin(t)
+	view := decodeData[dashboardView](t, tc.Call("GET", "/dashboard/view", callerReq()))
+
+	res := tc.Call("POST", "/dashboard/views/:viewId/panels",
+		withPathParams(callerReq(), map[string]string{"viewId": view.ID}).
+			WithJSONBody(map[string]any{
+				"type":  "chart",
+				"title": "Missing chart type",
+				"query": "SELECT id FROM tasks WHERE project_id = {{project_id}}",
+			}))
+	if res.StatusCode != 400 {
+		t.Fatalf("expected 400, got %d: %s", res.StatusCode, res.BodyString())
+	}
+}
+
+func TestCreatePanel_RejectsUnguardedQuery(t *testing.T) {
+	tc := setupPlugin(t)
+	view := decodeData[dashboardView](t, tc.Call("GET", "/dashboard/view", callerReq()))
+
+	res := tc.Call("POST", "/dashboard/views/:viewId/panels",
+		withPathParams(callerReq(), map[string]string{"viewId": view.ID}).
+			WithJSONBody(map[string]any{
+				"type":  "table",
+				"title": "Unscoped",
+				"query": "SELECT id, title FROM tasks", // no {{project_id}} placeholder
+			}))
+	if res.StatusCode != 400 {
+		t.Fatalf("expected 400 (query must be project-scoped), got %d: %s", res.StatusCode, res.BodyString())
+	}
+}
+
+func TestCreateAndUpdatePanel_Layout(t *testing.T) {
+	tc := setupPlugin(t)
+	view := decodeData[dashboardView](t, tc.Call("GET", "/dashboard/view", callerReq()))
+
+	created := decodeData[dashboardPanel](t, tc.Call("POST", "/dashboard/views/:viewId/panels",
+		withPathParams(callerReq(), map[string]string{"viewId": view.ID}).
+			WithJSONBody(map[string]any{
+				"type":  "table",
+				"title": "Task list",
+				"query": "SELECT id, title FROM tasks WHERE project_id = {{project_id}}",
+			})))
+
+	layoutRes := tc.Call("PATCH", "/dashboard/views/:viewId/panels/layout",
+		withPathParams(callerReq(), map[string]string{"viewId": view.ID}).
+			WithJSONBody(map[string]any{
+				"panels": []map[string]any{
+					{"id": created.ID, "pos_x": 4, "pos_y": 8, "width": 6, "height": 5},
+				},
+			}))
+	if layoutRes.StatusCode != 204 {
+		t.Fatalf("expected 204, got %d: %s", layoutRes.StatusCode, layoutRes.BodyString())
+	}
+
+	reloaded := decodeData[dashboardView](t, tc.Call("GET", "/dashboard/views/:viewId",
+		withPathParams(callerReq(), map[string]string{"viewId": view.ID})))
+	if len(reloaded.Panels) != 1 || reloaded.Panels[0].PosX != 4 || reloaded.Panels[0].Width != 6 {
+		t.Fatalf("expected updated layout to persist, got %+v", reloaded.Panels)
+	}
+}
+
+func TestDeletePanel(t *testing.T) {
+	tc := setupPlugin(t)
+	view := decodeData[dashboardView](t, tc.Call("GET", "/dashboard/view", callerReq()))
+
+	created := decodeData[dashboardPanel](t, tc.Call("POST", "/dashboard/views/:viewId/panels",
+		withPathParams(callerReq(), map[string]string{"viewId": view.ID}).
+			WithJSONBody(map[string]any{"type": "text", "title": "Temp", "content": "x"})))
+
+	delRes := tc.Call("DELETE", "/dashboard/views/:viewId/panels/:panelId",
+		withPathParams(callerReq(), map[string]string{"viewId": view.ID, "panelId": created.ID}))
+	if delRes.StatusCode != 204 {
+		t.Fatalf("expected 204, got %d: %s", delRes.StatusCode, delRes.BodyString())
+	}
+}
+
+// ── Admin-scope panel CRUD ───────────────────────────────────────────────────
 //
-// projectOverview and instanceOverview aggregate across task_statuses,
-// tasks, sprints, task_assignees, project_members, and users via SQL JOINs,
-// GROUP BY, and FILTER (WHERE ...) clauses — real PostgreSQL features the
-// plugin relies on in production. plugintest's InMemoryDB intentionally only
-// supports single-table "SELECT ... FROM t [WHERE col = $N]" queries (see
-// its doc comment), the same limitation that already left the time-logging
-// plugin's analogous multi-join admin-scope aggregates (listAllTimeLogs,
-// timeLogsSummaryAll) untested via plugintest — see that file's comment
-// above TestUpdateTimeLogGlobal_Success. Full aggregation correctness for
-// this plugin should be verified with a real Postgres instance in an
-// integration/e2e suite; here we only confirm the handlers are wired up and
-// surface DB errors instead of panicking, matching the coverage level the
-// existing plugins apply to this same class of query.
+// Unlike the project-scope routes above, none of these carry a :viewId path
+// segment (see resolveViewID in views.go) — the admin dashboard is a global
+// singleton addressed by /dashboard/admin-view alone. These regression-test
+// the fix for a bug where the handlers blindly read req.PathParam("viewId"),
+// got "" back, and blew up downstream trying to use it as a UUID query param.
 
-func TestProjectOverview_WiredUp(t *testing.T) {
-	tc := plugintest.NewContext(t)
-	var p dashboardPlugin
-	if err := p.Init(tc.PluginContext()); err != nil {
-		t.Fatal("Init failed:", err)
+func TestCreateAdminPanel(t *testing.T) {
+	tc := setupPlugin(t)
+
+	res := tc.Call("POST", "/dashboard/admin-view/panels",
+		adminReq().WithJSONBody(map[string]any{
+			"type":    "text",
+			"title":   "Notes",
+			"content": "Instance-wide notes.",
+		}))
+	if res.StatusCode != 201 {
+		t.Fatalf("expected 201, got %d: %s", res.StatusCode, res.BodyString())
+	}
+	panel := decodeData[dashboardPanel](t, res)
+	if panel.Type != "text" || panel.Content == nil || *panel.Content == "" {
+		t.Fatalf("unexpected panel: %+v", panel)
 	}
 
-	res := tc.Call("GET", "/dashboard/overview", callerReq())
-	// No tables seeded (InMemoryDB can't run this plugin's JOIN/GROUP BY
-	// queries anyway) — assert the handler is reachable and fails cleanly
-	// with a 500 + logged error rather than panicking, instead of asserting
-	// on aggregation results it cannot actually compute here.
-	if res.StatusCode != 500 {
-		t.Fatalf("expected 500 (InMemoryDB can't execute JOIN/GROUP BY), got %d: %s", res.StatusCode, res.BodyString())
-	}
-	if !tc.Log.HasMessage("projectOverview") {
-		t.Fatalf("expected an error to be logged mentioning projectOverview, got: %+v", tc.Log.Entries())
+	view := decodeData[dashboardView](t, tc.Call("GET", "/dashboard/admin-view", adminReq()))
+	if len(view.Panels) != 1 || view.Panels[0].ID != panel.ID {
+		t.Fatalf("expected the new panel to show up on the admin singleton, got %+v", view.Panels)
 	}
 }
 
-func TestInstanceOverview_WiredUp(t *testing.T) {
-	tc := plugintest.NewContext(t)
-	var p dashboardPlugin
-	if err := p.Init(tc.PluginContext()); err != nil {
-		t.Fatal("Init failed:", err)
+func TestUpdateAdminPanel(t *testing.T) {
+	tc := setupPlugin(t)
+
+	created := decodeData[dashboardPanel](t, tc.Call("POST", "/dashboard/admin-view/panels",
+		adminReq().WithJSONBody(map[string]any{"type": "text", "title": "Original", "content": "x"})))
+
+	res := tc.Call("PATCH", "/dashboard/admin-view/panels/:panelId",
+		withPathParams(adminReq(), map[string]string{"panelId": created.ID}).
+			WithJSONBody(map[string]any{"type": "text", "title": "Renamed", "content": "y"}))
+	if res.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d: %s", res.StatusCode, res.BodyString())
+	}
+	updated := decodeData[dashboardPanel](t, res)
+	if updated.Title != "Renamed" {
+		t.Fatalf("expected title to be updated, got %+v", updated)
+	}
+}
+
+func TestDeleteAdminPanel(t *testing.T) {
+	tc := setupPlugin(t)
+
+	created := decodeData[dashboardPanel](t, tc.Call("POST", "/dashboard/admin-view/panels",
+		adminReq().WithJSONBody(map[string]any{"type": "text", "title": "Temp", "content": "x"})))
+
+	res := tc.Call("DELETE", "/dashboard/admin-view/panels/:panelId",
+		withPathParams(adminReq(), map[string]string{"panelId": created.ID}))
+	if res.StatusCode != 204 {
+		t.Fatalf("expected 204, got %d: %s", res.StatusCode, res.BodyString())
+	}
+}
+
+func TestUpdateAdminPanelLayout(t *testing.T) {
+	tc := setupPlugin(t)
+
+	created := decodeData[dashboardPanel](t, tc.Call("POST", "/dashboard/admin-view/panels",
+		adminReq().WithJSONBody(map[string]any{"type": "text", "title": "Notes", "content": "x"})))
+
+	res := tc.Call("PATCH", "/dashboard/admin-view/panels/layout",
+		adminReq().WithJSONBody(map[string]any{
+			"panels": []map[string]any{
+				{"id": created.ID, "pos_x": 2, "pos_y": 3, "width": 5, "height": 4},
+			},
+		}))
+	if res.StatusCode != 204 {
+		t.Fatalf("expected 204, got %d: %s", res.StatusCode, res.BodyString())
 	}
 
-	res := tc.Call("GET", "/dashboard/overview-all", plugintest.Request{})
-	// Unlike projectOverview's queries (which hit a WHERE clause the fake
-	// parser can't evaluate against an unseeded table and so error),
-	// instanceOverview's query has no WHERE clause at all; InMemoryDB
-	// resolves an unseeded "projects" table to a valid empty result set
-	// instead of an error (see InMemoryDB.querySelect). Assert the handler
-	// is reachable and returns a well-formed empty overview.
+	view := decodeData[dashboardView](t, tc.Call("GET", "/dashboard/admin-view", adminReq()))
+	if len(view.Panels) != 1 || view.Panels[0].PosX != 2 || view.Panels[0].Width != 5 {
+		t.Fatalf("expected updated layout to persist, got %+v", view.Panels)
+	}
+}
+
+func TestRunAdminPanelQuery(t *testing.T) {
+	tc := setupPlugin(t)
+
+	panel := decodeData[dashboardPanel](t, tc.Call("POST", "/dashboard/admin-view/panels",
+		adminReq().WithJSONBody(map[string]any{
+			"type":  "table",
+			"title": "All tasks",
+			"query": "SELECT id, project_id, title FROM tasks",
+		})))
+
+	res := tc.Call("POST", "/dashboard/admin-view/panels/:panelId/data",
+		withPathParams(adminReq(), map[string]string{"panelId": panel.ID}))
 	if res.StatusCode != 200 {
 		t.Fatalf("expected 200, got %d: %s", res.StatusCode, res.BodyString())
 	}
 	var env struct {
-		Data instanceOverviewData `json:"data"`
+		Data struct {
+			Rows []map[string]any `json:"rows"`
+		} `json:"data"`
 	}
 	if err := json.Unmarshal(res.Body, &env); err != nil {
 		t.Fatal(err)
 	}
-	if env.Data.ProjectCount != 0 || len(env.Data.Projects) != 0 {
-		t.Fatalf("expected an empty overview, got %+v", env.Data)
+	if len(env.Data.Rows) != 3 {
+		t.Fatalf("expected all 3 seeded tasks across projects for an admin-scope query, got %d: %+v", len(env.Data.Rows), env.Data.Rows)
 	}
 }
 
-// ── Manifest / route registration parity ─────────────────────────────────────
-//
-// Mirrors the same guard used by the time-logging and checklist plugins:
-// every route declared in plugin.json must resolve to a handler actually
-// registered via ctx.Route in Init(), so a manifest/backend drift doesn't
-// silently fall back to the host's default (no permission check) policy.
+// ── Guarded query execution ───────────────────────────────────────────────────
 
-func TestManifestRoutesMatchRegisteredRoutes(t *testing.T) {
-	data, err := os.ReadFile("../plugin.json")
+func TestRunPanelQuery_ScopesToOwnProject(t *testing.T) {
+	tc := setupPlugin(t)
+	view := decodeData[dashboardView](t, tc.Call("GET", "/dashboard/view", callerReq()))
+
+	panel := decodeData[dashboardPanel](t, tc.Call("POST", "/dashboard/views/:viewId/panels",
+		withPathParams(callerReq(), map[string]string{"viewId": view.ID}).
+			WithJSONBody(map[string]any{
+				"type":  "table",
+				"title": "My tasks",
+				"query": "SELECT id, title FROM tasks WHERE project_id = {{project_id}}",
+			})))
+
+	dataRes := tc.Call("POST", "/dashboard/views/:viewId/panels/:panelId/data",
+		withPathParams(callerReq(), map[string]string{"viewId": view.ID, "panelId": panel.ID}))
+	if dataRes.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d: %s", dataRes.StatusCode, dataRes.BodyString())
+	}
+	var env struct {
+		Data struct {
+			Rows []map[string]any `json:"rows"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(dataRes.Body, &env); err != nil {
+		t.Fatal(err)
+	}
+	// Only the two rows seeded under testProjectID should come back — the
+	// InMemoryDB's WHERE-matching plus our forced project_id binding
+	// together confirm the cross-project row ("task-3") never leaks in.
+	if len(env.Data.Rows) != 2 {
+		t.Fatalf("expected 2 rows scoped to the caller's project, got %d: %+v", len(env.Data.Rows), env.Data.Rows)
+	}
+}
+
+func TestPreviewQuery_RejectsForbiddenKeyword(t *testing.T) {
+	tc := setupPlugin(t)
+
+	res := tc.Call("POST", "/dashboard/query/preview",
+		callerReq().WithJSONBody(map[string]string{
+			"query": "SELECT id FROM tasks WHERE project_id = {{project_id}}; DROP TABLE tasks;",
+		}))
+	if res.StatusCode != 400 {
+		t.Fatalf("expected 400, got %d: %s", res.StatusCode, res.BodyString())
+	}
+}
+
+// TestPreviewQuery_NoLongerRestrictsTablesByWhitelist pins the removal of
+// query_guard.go's old per-table read whitelist: a table that was never on
+// it (unlike "tasks", seeded in setupPlugin) must still be reachable once
+// it satisfies every other rule (single SELECT, project-scoped placeholder,
+// no forbidden keywords). Which columns are sensitive is the host's job now
+// (services/api/internal/platform/plugin/runtime.go's sensitiveFields/core
+// registry), not something this plugin's own guard decides — that
+// redaction isn't exercised by plugintest's InMemoryDB, so it's covered by
+// the API's own test suite, not here.
+func TestPreviewQuery_NoLongerRestrictsTablesByWhitelist(t *testing.T) {
+	tc := setupPlugin(t)
+	tc.DB.SeedRows("workflows", []string{"id", "project_id", "name"}, [][]any{
+		{"workflow-1", testProjectID, "Some workflow"},
+	})
+
+	res := tc.Call("POST", "/dashboard/query/preview",
+		callerReq().WithJSONBody(map[string]string{
+			"query": "SELECT id, name FROM workflows WHERE project_id = {{project_id}}",
+		}))
+	if res.StatusCode != 200 {
+		t.Fatalf("expected 200 (table-level whitelist no longer applies), got %d: %s", res.StatusCode, res.BodyString())
+	}
+}
+
+func TestPreviewAdminQuery_AllowsCrossProjectNoPlaceholder(t *testing.T) {
+	tc := setupPlugin(t)
+
+	res := tc.Call("POST", "/dashboard/admin-query/preview",
+		adminReq().WithJSONBody(map[string]string{
+			"query": "SELECT id, project_id, title FROM tasks",
+		}))
+	if res.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d: %s", res.StatusCode, res.BodyString())
+	}
+	var env struct {
+		Data struct {
+			Rows []map[string]any `json:"rows"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(res.Body, &env)
+	if len(env.Data.Rows) != 3 {
+		t.Fatalf("expected all 3 seeded tasks across projects for an admin-scope query, got %d", len(env.Data.Rows))
+	}
+}
+
+// ── query_guard.go unit tests (no HTTP layer) ────────────────────────────────
+
+func TestValidateQuery_RequiresProjectPlaceholder(t *testing.T) {
+	if _, err := validateQuery("SELECT id FROM tasks", true); err == nil {
+		t.Fatal("expected error for missing {{project_id}} placeholder")
+	}
+}
+
+func TestValidateQuery_AppendsDefaultLimit(t *testing.T) {
+	safe, err := validateQuery("SELECT id FROM tasks WHERE project_id = {{project_id}}", true)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	var m struct {
-		Backend struct {
-			Routes []struct {
-				Method string `json:"method"`
-				Path   string `json:"path"`
-			} `json:"routes"`
-		} `json:"backend"`
-	}
-	if err := json.Unmarshal(data, &m); err != nil {
-		t.Fatal(err)
-	}
-	if len(m.Backend.Routes) == 0 {
-		t.Fatal("plugin.json declares no backend routes")
-	}
-
-	tc := plugintest.NewContext(t)
-	var p dashboardPlugin
-	if err := p.Init(tc.PluginContext()); err != nil {
-		t.Fatal(err)
-	}
-	for _, r := range m.Backend.Routes {
-		relPath := stripProjectPrefix(r.Path)
-		req := &plugin.Request{PathParams: map[string]string{}}
-		res := plugin.NewResponse()
-		if ok := plugin.DispatchRoute(tc.PluginContext(), r.Method, relPath, req, res); !ok {
-			t.Errorf("plugin.json declares %s %s (relative path %s) but Init() registers no matching route",
-				r.Method, r.Path, relPath)
-		}
+	if !containsLimit(safe) {
+		t.Fatalf("expected LIMIT to be appended, got %q", safe)
 	}
 }
 
-// stripProjectPrefix mirrors plugin-sdk-go's splitProjectPath: it strips a
-// leading "/projects/<segment>" pair so a manifest path can be compared
-// against the relative pattern registered via ctx.Route in Init().
-func stripProjectPrefix(path string) string {
-	const prefix = "/projects/"
-	if !strings.HasPrefix(path, prefix) {
-		return path
+func TestValidateQuery_RejectsMultipleStatements(t *testing.T) {
+	if _, err := validateQuery("SELECT id FROM tasks WHERE project_id = {{project_id}}; SELECT 1;", true); err == nil {
+		t.Fatal("expected error for multiple statements")
 	}
-	rest := strings.TrimPrefix(path, prefix)
-	parts := strings.SplitN(rest, "/", 2)
-	if len(parts) < 2 {
-		return "/"
+}
+
+func TestValidateQuery_RejectsDollarOneDirectUse(t *testing.T) {
+	if _, err := validateQuery("SELECT id FROM tasks WHERE project_id = {{project_id}} AND id = $1", true); err == nil {
+		t.Fatal("expected error: $1 is reserved for the injected project_id")
 	}
-	return "/" + parts[1]
+}
+
+func containsLimit(sql string) bool {
+	return limitRe.MatchString(sql)
 }

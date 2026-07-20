@@ -1,0 +1,13 @@
+/**
+ * grid-overrides.css — small override of react-grid-layout's bundled
+ * styles.css, imported right after it in PanelGrid.tsx. That stylesheet
+ * hardcodes `background: red` for the drag/resize placeholder, which
+ * clashes with the host's own accent color. Uses --primary (defined in the
+ * host app's :root/.dark, see apps/web/src/index.css) instead of a
+ * plugin-local hardcoded color, so it stays correct across the host's
+ * light/dark themes and if the host's palette ever changes.
+ */
+
+.react-grid-item.react-grid-placeholder {
+  background: var(--primary, #2563eb);
+}

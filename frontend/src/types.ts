@@ -1,60 +1,74 @@
 /**
- * types.ts — response shapes for the dashboard plugin's two read-only
- * aggregation endpoints. These mirror the backend's projectOverviewData /
- * instanceOverviewData JSON encodings (see backend/overview.go) field for
- * field, snake_case to match the host's JSON envelope convention.
+ * types.ts — response shapes for the dashboard plugin's panel-based
+ * dashboard builder. Mirrors the backend's dashboardView/dashboardPanel JSON
+ * encodings (see backend/types.go, views.go, panels.go) field for field.
  */
 
-export interface StatusCount {
-  status_id: string;
-  status_name: string;
-  color: string;
-  category: string;
-  count: number;
-}
+export type DashboardScopeKind = "project" | "admin" | "integration";
 
-export interface SprintProgress {
+export type PanelType = "chart" | "table" | "text";
+export type ChartType = "bar" | "line" | "donut";
+
+export interface DashboardPanel {
   id: string;
+  dashboard_view_id: string;
+  type: PanelType;
+  title: string;
+  query?: string | null;
+  chart_type?: ChartType | null;
+  content?: string | null;
+  viz_config: Record<string, unknown>;
+  pos_x: number;
+  pos_y: number;
+  width: number;
+  height: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DashboardView {
+  id: string;
+  project_id?: string | null;
+  scope: DashboardScopeKind;
+  /** Set only for scope="integration": the host's own interaction-view id
+   * this dashboard is a singleton for. See backend/types.go. */
+  host_view_id?: string | null;
   name: string;
-  start_date: string;
-  end_date: string;
-  goal: string;
-  total_tasks: number;
-  done_tasks: number;
-  total_story_points: number;
-  done_story_points: number;
-  percent_tasks_done: number;
-  percent_points_done: number;
+  panels: DashboardPanel[];
+  created_at: string;
+  updated_at: string;
 }
 
-export interface WorkloadEntry {
-  member_id: string;
-  member_name: string;
-  open_task_count: number;
-  total_task_count: number;
+/** Body sent when creating/updating a panel. */
+export interface PanelInput {
+  type: PanelType;
+  title: string;
+  query?: string | null;
+  chart_type?: ChartType | null;
+  content?: string | null;
+  viz_config?: Record<string, unknown>;
+  pos_x?: number;
+  pos_y?: number;
+  width?: number;
+  height?: number;
 }
 
-/** Response shape of GET /projects/:projectId/dashboard/overview. */
-export interface ProjectOverview {
-  total_tasks: number;
-  total_story_points: number;
-  status_breakdown: StatusCount[];
-  active_sprint: SprintProgress | null;
-  workload: WorkloadEntry[];
+/** One row of a bulk drag/resize layout commit. */
+export interface PanelLayoutEntry {
+  id: string;
+  pos_x: number;
+  pos_y: number;
+  width: number;
+  height: number;
 }
 
-export interface ProjectSummaryRow {
-  project_id: string;
-  project_name: string;
-  total_tasks: number;
-  open_tasks: number;
-  done_tasks: number;
+/** Response shape of the panel-data / query-preview endpoints. */
+export interface QueryResult {
+  columns: string[];
+  rows: Record<string, unknown>[];
 }
 
-/** Response shape of GET /dashboard/overview-all (admin scope). */
-export interface InstanceOverview {
-  project_count: number;
-  total_tasks: number;
-  total_open_tasks: number;
-  projects: ProjectSummaryRow[];
+/** A structured error surfaced by the backend query guard (400 body). */
+export interface QueryGuardError {
+  message: string;
 }
