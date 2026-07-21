@@ -9,12 +9,34 @@ package main
 import (
 	"encoding/json"
 	"strings"
+	"time"
 
 	plugin "github.com/Paca-AI/plugin-sdk-go"
 )
 
 var validPanelTypes = map[string]bool{"chart": true, "table": true, "text": true}
 var validChartTypes = map[string]bool{"bar": true, "line": true, "donut": true}
+
+// panelDataCacheTTL bounds how stale a served panel result may be. Panel
+// queries commonly aggregate over the host's shared tables, so caching the
+// last result trades a few minutes of staleness for not re-running that
+// aggregation on every dashboard render/refresh.
+const panelDataCacheTTL = 5 * time.Minute
+
+// panelDataCacheKey returns the cache key for a saved panel's last-run
+// result. Panel IDs are globally unique (UUID) across every scope, so the
+// key doesn't need to also encode view/project — and the host namespaces it
+// per-plugin already (see plugin-sdk-go's Context.Cache).
+func panelDataCacheKey(panelID string) string {
+	return "panel-data:" + panelID
+}
+
+// isForceRefresh reports whether the request asked to bypass the panel data
+// cache via ?refresh=true|1 (any other value, including absent, means "no").
+func isForceRefresh(req *plugin.Request) bool {
+	v := req.QueryParam("refresh")
+	return v == "true" || v == "1"
+}
 
 type panelBody struct {
 	Type      string          `json:"type"`
@@ -225,6 +247,10 @@ func (p *dashboardPlugin) updatePanelForView(req *plugin.Request, res *plugin.Re
 		res.Error(500, "failed to reload panel after update")
 		return
 	}
+	// The panel's query (or chart/table shape) may have just changed, so
+	// last run's cached data — if any — is no longer valid; don't wait out
+	// its TTL.
+	p.cache.Delete(panelDataCacheKey(panelID))
 	ok(res, panelFromRow(result.Columns, result.Rows[0]))
 }
 
@@ -251,6 +277,7 @@ func (p *dashboardPlugin) deletePanelForView(req *plugin.Request, res *plugin.Re
 		res.Error(404, "panel not found")
 		return
 	}
+	p.cache.Delete(panelDataCacheKey(panelID))
 	res.NoContent()
 }
 
@@ -299,6 +326,12 @@ func (p *dashboardPlugin) updatePanelLayoutForView(req *plugin.Request, res *plu
 // returns fresh rows. requireProjectScope must match how the panel's query
 // was originally validated (true for project/integration, false for admin)
 // so the {{project_id}} placeholder is substituted consistently.
+//
+// A truthy ?refresh= query param (the frontend's per-panel reload button —
+// see PanelCard's onRunQuery) bypasses the cached result and always
+// recomputes, then repopulates the cache with the fresh value/TTL. Without
+// this, clicking reload within panelDataCacheTTL of the last run would just
+// hand back the same stale cached data the user is trying to get past.
 func (p *dashboardPlugin) runPanelQueryForView(req *plugin.Request, res *plugin.Response, projectID string, requireProjectScope bool) {
 	viewID, viewOK := p.resolveViewID(req, projectID, res)
 	if !viewOK {
@@ -329,7 +362,28 @@ func (p *dashboardPlugin) runPanelQueryForView(req *plugin.Request, res *plugin.
 		return
 	}
 
-	p.executeGuardedQuery(res, rawQuery, projectID, requireProjectScope)
+	cacheKey := panelDataCacheKey(panelID)
+	if !isForceRefresh(req) {
+		if cached, hit := p.cache.Get(cacheKey); hit {
+			var data map[string]any
+			if err := json.Unmarshal([]byte(cached), &data); err == nil {
+				ok(res, data)
+				return
+			}
+			p.log.Warn("runPanelQueryForView: discarding unparsable cache entry for panel " + panelID)
+		}
+	}
+
+	data, queryOK := p.runGuardedQuery(res, rawQuery, projectID, requireProjectScope)
+	if !queryOK {
+		return
+	}
+	if encoded, err := json.Marshal(data); err != nil {
+		p.log.Warn("runPanelQueryForView: failed to encode panel data for cache: " + err.Error())
+	} else {
+		p.cache.Set(cacheKey, string(encoded), panelDataCacheTTL)
+	}
+	ok(res, data)
 }
 
 // previewQuery handles POST /dashboard/query/preview (and the admin
@@ -347,32 +401,48 @@ func (p *dashboardPlugin) previewQuery(req *plugin.Request, res *plugin.Response
 	p.executeGuardedQuery(res, b.Query, req.Caller.ProjectID, requireProjectScope)
 }
 
-// executeGuardedQuery runs validateQuery (see query_guard.go for the full
-// safety model) and, on success, executes the rewritten SQL with the
-// caller's project_id bound as $1 for project/integration-scoped queries.
+// executeGuardedQuery runs rawQuery via runGuardedQuery and writes the
+// result directly — used by the not-yet-saved query preview path, which
+// must always reflect the live data (see previewQuery's doc comment) and so
+// is never cached, unlike the saved-panel-data path in
+// runPanelQueryForView.
 func (p *dashboardPlugin) executeGuardedQuery(res *plugin.Response, rawQuery, projectID string, requireProjectScope bool) {
+	data, queryOK := p.runGuardedQuery(res, rawQuery, projectID, requireProjectScope)
+	if !queryOK {
+		return
+	}
+	ok(res, data)
+}
+
+// runGuardedQuery runs validateQuery (see query_guard.go for the full safety
+// model) and, on success, executes the rewritten SQL with the caller's
+// project_id bound as $1 for project/integration-scoped queries, shaping the
+// result as {"columns":[...],"rows":[...]}. On failure it writes the error
+// response itself and returns ok=false; callers must not write another
+// response in that case.
+func (p *dashboardPlugin) runGuardedQuery(res *plugin.Response, rawQuery, projectID string, requireProjectScope bool) (map[string]any, bool) {
 	safeQuery, err := validateQuery(rawQuery, requireProjectScope)
 	if err != nil {
 		res.Error(400, err.Error())
-		return
+		return nil, false
 	}
 
-	var result *plugin.DBQueryResult
+	var queryResult *plugin.DBQueryResult
 	if requireProjectScope {
-		result, err = p.db.Query(safeQuery, projectID)
+		queryResult, err = p.db.Query(safeQuery, projectID)
 	} else {
-		result, err = p.db.Query(safeQuery)
+		queryResult, err = p.db.Query(safeQuery)
 	}
 	if err != nil {
-		p.log.Error("executeGuardedQuery: " + err.Error())
+		p.log.Error("runGuardedQuery: " + err.Error())
 		res.Error(400, "query failed: "+err.Error())
-		return
+		return nil, false
 	}
 
-	rows := make([]map[string]any, 0, len(result.Rows))
-	for _, row := range result.Rows {
-		r := make(map[string]any, len(result.Columns))
-		for i, col := range result.Columns {
+	rows := make([]map[string]any, 0, len(queryResult.Rows))
+	for _, row := range queryResult.Rows {
+		r := make(map[string]any, len(queryResult.Columns))
+		for i, col := range queryResult.Columns {
 			if i < len(row) {
 				r[col] = row[i]
 			}
@@ -384,11 +454,11 @@ func (p *dashboardPlugin) executeGuardedQuery(res *plugin.Response, rawQuery, pr
 	// Columns field is a nil slice — encoding/json marshals that as `null`,
 	// not `[]`, which crashes every frontend consumer that assumes
 	// QueryResult.columns is always an array (chart renderers, table view).
-	columns := result.Columns
+	columns := queryResult.Columns
 	if columns == nil {
 		columns = []string{}
 	}
-	ok(res, map[string]any{"columns": columns, "rows": rows})
+	return map[string]any{"columns": columns, "rows": rows}, true
 }
 
 // panelBelongsToView verifies a panel is owned by the given view, writing

@@ -133,11 +133,21 @@ export function useUpdatePanelLayout(api: PluginApiClient, scope: DashboardScope
  * `.mutate()` for panel B before panel A settles detaches A's observer, so
  * A's onSuccess/onSettled never runs even though its request succeeds
  * (panel stuck on "Loading…"). A plain function per call has no shared
- * state to race on. */
+ * state to race on.
+ *
+ * `forceRefresh` bypasses the backend's panel-data cache (5-minute TTL) —
+ * pass it for an explicit user action (the panel's reload button) so
+ * clicking reload can't just hand back the same stale cached result;
+ * mount-time auto-fetches omit it and are fine reading from cache. */
 export function usePanelDataFetcher(api: PluginApiClient, scope: DashboardScopeKind, viewId: string) {
   const base = viewBasePath(api, scope, viewId);
   return useCallback(
-    (panelId: string) => api.pluginPost<QueryResult>(PLUGIN_ID, `${base}/panels/${panelId}/data`, {}),
+    (panelId: string, forceRefresh = false) =>
+      api.pluginPost<QueryResult>(
+        PLUGIN_ID,
+        `${base}/panels/${panelId}/data${forceRefresh ? "?refresh=true" : ""}`,
+        {},
+      ),
     [api, base],
   );
 }

@@ -33,13 +33,15 @@ func nowStr() string {
 
 // dashboardPlugin implements plugin.Plugin.
 type dashboardPlugin struct {
-	db  *plugin.DB
-	log *plugin.Logger
+	db    *plugin.DB
+	cache *plugin.Cache
+	log   *plugin.Logger
 }
 
 // Init registers all routes on the provided context.
 func (p *dashboardPlugin) Init(ctx *plugin.Context) error {
 	p.db = ctx.DB()
+	p.cache = ctx.Cache()
 	p.log = ctx.Log()
 
 	// ── Project-scope dashboard (get-or-create singleton) ──────────────────

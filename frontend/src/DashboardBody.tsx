@@ -9,7 +9,10 @@
  * (not on every render/poll) and again only when the user hits a panel's
  * refresh button or edits/saves it — dashboards here are operational
  * snapshots, not live-streaming, and re-running arbitrary SQL on every
- * poll tick would be wasteful against the shared Postgres.
+ * poll tick would be wasteful against the shared Postgres. The backend
+ * additionally caches each panel's last result for 5 minutes; the mount
+ * fetch is fine reading a cache hit, but the refresh button always forces
+ * a bypass (forceRefresh=true) so it never just re-hands-back stale data.
  */
 
 import { useEffect, useState } from "react";
@@ -52,11 +55,17 @@ export function DashboardBody({ api, scope, view, canEdit }: DashboardBodyProps)
   // Each call is an independent promise (not a shared mutation observer),
   // so firing this concurrently for every panel on mount doesn't drop
   // earlier panels' callbacks — see usePanelDataFetcher's doc comment.
-  const runQuery = (panel: DashboardPanel) => {
+  //
+  // forceRefresh bypasses the backend's panel-data cache: the mount-time
+  // auto-fetch below omits it (a cache hit there is fine — this fires on
+  // every render where a panel has no result yet), but the reload button
+  // (wired to onRunQuery further down) always passes true, since a user
+  // hitting reload expects to see past-the-cache, live data.
+  const runQuery = (panel: DashboardPanel, forceRefresh = false) => {
     if (panel.type === "text") return;
     setLoadingIds((prev) => new Set(prev).add(panel.id));
     setErrors((prev) => ({ ...prev, [panel.id]: undefined }));
-    fetchPanelData(panel.id)
+    fetchPanelData(panel.id, forceRefresh)
       .then((data) => setResults((prev) => ({ ...prev, [panel.id]: data })))
       .catch((err) =>
         setErrors((prev) => ({ ...prev, [panel.id]: err instanceof Error ? err.message : "Query failed" })),
@@ -120,7 +129,7 @@ export function DashboardBody({ api, scope, view, canEdit }: DashboardBodyProps)
         onLayoutCommit={(entries) => updateLayout.mutate(entries)}
         onEditPanel={setEditingPanel}
         onDeletePanel={handleDeletePanel}
-        onRunQuery={runQuery}
+        onRunQuery={(panel) => runQuery(panel, true)}
         queryResultsByPanelId={results}
         loadingPanelIds={loadingIds}
         errorsByPanelId={errors}
