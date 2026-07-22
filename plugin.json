@@ -1,36 +1,154 @@
 {
   "id": "com.paca.dashboard",
   "displayName": "Dashboard",
-  "description": "Adds an at-a-glance project dashboard (task status breakdown, sprint burndown, story points, assignee workload) and a cross-project instance overview on the admin page.",
-  "version": "0.1.0",
-  "permissions": ["db.read", "events.subscribe"],
+  "description": "Customizable panel-based dashboard builder (charts, tables, text) across the project dashboard page, the admin dashboard page, and a single dashboard per Integration-page view (backlog/sprint/timeline).",
+  "version": "0.3.0",
+  "permissions": ["db.read", "db.write", "events.subscribe", "cache"],
   "backend": {
     "eventSubscriptions": [],
     "routes": [
       {
         "method": "GET",
-        "path": "/projects/:projectId/dashboard/overview",
+        "path": "/projects/:projectId/dashboard/view",
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
-          {
-            "name": "requirePermissions",
-            "scope": "project",
-            "permissions": ["projects.read"]
-          }
+          { "name": "requirePermissions", "scope": "project", "permissions": ["projects.read"] }
         ]
       },
       {
         "method": "GET",
-        "path": "/dashboard/overview-all",
+        "path": "/projects/:projectId/dashboard/view/:hostViewId",
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
-          {
-            "name": "requirePermissions",
-            "scope": "global",
-            "permissions": ["users.write"]
-          }
+          { "name": "requirePermissions", "scope": "project", "permissions": ["projects.read"] }
+        ]
+      },
+      {
+        "method": "GET",
+        "path": "/projects/:projectId/dashboard/views/:viewId",
+        "middlewares": [
+          { "name": "optionalAuthn" },
+          { "name": "requireFreshPassword" },
+          { "name": "requirePermissions", "scope": "project", "permissions": ["projects.read"] }
+        ]
+      },
+      {
+        "method": "POST",
+        "path": "/projects/:projectId/dashboard/views/:viewId/panels",
+        "middlewares": [
+          { "name": "optionalAuthn" },
+          { "name": "requireFreshPassword" },
+          { "name": "requirePermissions", "scope": "project", "permissions": ["projects.write"] }
+        ]
+      },
+      {
+        "method": "PATCH",
+        "path": "/projects/:projectId/dashboard/views/:viewId/panels/:panelId",
+        "middlewares": [
+          { "name": "optionalAuthn" },
+          { "name": "requireFreshPassword" },
+          { "name": "requirePermissions", "scope": "project", "permissions": ["projects.write"] }
+        ]
+      },
+      {
+        "method": "DELETE",
+        "path": "/projects/:projectId/dashboard/views/:viewId/panels/:panelId",
+        "middlewares": [
+          { "name": "optionalAuthn" },
+          { "name": "requireFreshPassword" },
+          { "name": "requirePermissions", "scope": "project", "permissions": ["projects.write"] }
+        ]
+      },
+      {
+        "method": "PATCH",
+        "path": "/projects/:projectId/dashboard/views/:viewId/panels/layout",
+        "middlewares": [
+          { "name": "optionalAuthn" },
+          { "name": "requireFreshPassword" },
+          { "name": "requirePermissions", "scope": "project", "permissions": ["projects.write"] }
+        ]
+      },
+      {
+        "method": "POST",
+        "path": "/projects/:projectId/dashboard/views/:viewId/panels/:panelId/data",
+        "middlewares": [
+          { "name": "optionalAuthn" },
+          { "name": "requireFreshPassword" },
+          { "name": "requirePermissions", "scope": "project", "permissions": ["projects.read"] }
+        ]
+      },
+      {
+        "method": "POST",
+        "path": "/projects/:projectId/dashboard/query/preview",
+        "middlewares": [
+          { "name": "optionalAuthn" },
+          { "name": "requireFreshPassword" },
+          { "name": "requirePermissions", "scope": "project", "permissions": ["projects.write"] }
+        ]
+      },
+      {
+        "method": "GET",
+        "path": "/dashboard/admin-view",
+        "middlewares": [
+          { "name": "optionalAuthn" },
+          { "name": "requireFreshPassword" },
+          { "name": "requirePermissions", "scope": "global", "permissions": ["users.write"] }
+        ]
+      },
+      {
+        "method": "POST",
+        "path": "/dashboard/admin-view/panels",
+        "middlewares": [
+          { "name": "optionalAuthn" },
+          { "name": "requireFreshPassword" },
+          { "name": "requirePermissions", "scope": "global", "permissions": ["users.write"] }
+        ]
+      },
+      {
+        "method": "PATCH",
+        "path": "/dashboard/admin-view/panels/:panelId",
+        "middlewares": [
+          { "name": "optionalAuthn" },
+          { "name": "requireFreshPassword" },
+          { "name": "requirePermissions", "scope": "global", "permissions": ["users.write"] }
+        ]
+      },
+      {
+        "method": "DELETE",
+        "path": "/dashboard/admin-view/panels/:panelId",
+        "middlewares": [
+          { "name": "optionalAuthn" },
+          { "name": "requireFreshPassword" },
+          { "name": "requirePermissions", "scope": "global", "permissions": ["users.write"] }
+        ]
+      },
+      {
+        "method": "PATCH",
+        "path": "/dashboard/admin-view/panels/layout",
+        "middlewares": [
+          { "name": "optionalAuthn" },
+          { "name": "requireFreshPassword" },
+          { "name": "requirePermissions", "scope": "global", "permissions": ["users.write"] }
+        ]
+      },
+      {
+        "method": "POST",
+        "path": "/dashboard/admin-view/panels/:panelId/data",
+        "middlewares": [
+          { "name": "optionalAuthn" },
+          { "name": "requireFreshPassword" },
+          { "name": "requirePermissions", "scope": "global", "permissions": ["users.write"] }
+        ]
+      },
+      {
+        "method": "POST",
+        "path": "/dashboard/admin-query/preview",
+        "middlewares": [
+          { "name": "optionalAuthn" },
+          { "name": "requireFreshPassword" },
+          { "name": "requirePermissions", "scope": "global", "permissions": ["users.write"] }
         ]
       }
     ]
@@ -46,6 +164,12 @@
       {
         "point": "admin.page",
         "component": "AdminDashboardPage",
+        "order": 5
+      },
+      {
+        "point": "view",
+        "component": "DashboardIntegrationView",
+        "label": "Dashboard",
         "order": 5
       }
     ],
@@ -70,5 +194,9 @@
   },
   "mcp": {
     "remoteEntryUrl": "/plugins-mcp/com.paca.dashboard/mcp.js"
+  },
+  "skills": {
+    "baseUrl": "/plugins-skills/com.paca.dashboard",
+    "names": ["paca-dashboard-builder"]
   }
 }
