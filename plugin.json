@@ -9,24 +9,6 @@
     "routes": [
       {
         "method": "GET",
-        "path": "/projects/:projectId/dashboard/overview",
-        "middlewares": [
-          { "name": "optionalAuthn" },
-          { "name": "requireFreshPassword" },
-          { "name": "requirePermissions", "scope": "project", "permissions": ["projects.read"] }
-        ]
-      },
-      {
-        "method": "GET",
-        "path": "/dashboard/overview-all",
-        "middlewares": [
-          { "name": "optionalAuthn" },
-          { "name": "requireFreshPassword" },
-          { "name": "requirePermissions", "scope": "global", "permissions": ["users.write"] }
-        ]
-      },
-      {
-        "method": "GET",
         "path": "/projects/:projectId/dashboard/view",
         "middlewares": [
           { "name": "optionalAuthn" },
@@ -212,5 +194,9 @@
   },
   "mcp": {
     "remoteEntryUrl": "/plugins-mcp/com.paca.dashboard/mcp.js"
+  },
+  "skills": {
+    "baseUrl": "/plugins-skills/com.paca.dashboard",
+    "names": ["paca-dashboard-builder"]
   }
 }

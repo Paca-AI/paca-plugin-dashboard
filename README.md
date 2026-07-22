@@ -21,7 +21,8 @@ scopes:
 dashboard/
 ├── backend/   — Go WASM plugin (runs inside the API host)
 ├── frontend/  — React micro-frontend (Module Federation remote)
-└── mcp/       — MCP tool server (for AI agent access)
+├── mcp/       — MCP tool server (for AI agent access)
+└── skills/    — Agent skill(s) documenting how to use the MCP tools
 ```
 
 ### Data model
@@ -178,9 +179,50 @@ rather than risk a false negative.
 
 ### MCP (`mcp/`)
 
-See `mcp/` for the AI-agent-facing tool surface (kept separate from this
-redesign's scope; update alongside the new routes if/when agent access to
-panel authoring is added).
+`mcp/src/index.ts` exposes the panel/view API to AI clients (Claude, GitHub
+Copilot, Cursor, etc.) via `@paca-ai/plugin-sdk-mcp`, mirroring
+`backend/plugin.go`'s route map one-for-one:
+
+| Tool | Backend route |
+|---|---|
+| `dashboard_get_view` | `GET /dashboard/view`, `/dashboard/view/:hostViewId`, or `/dashboard/views/:viewId` (branches on which optional arg is passed) |
+| `dashboard_preview_query` | `POST /dashboard/query/preview` |
+| `dashboard_create_panel` | `POST /dashboard/views/:viewId/panels` |
+| `dashboard_update_panel` | `PATCH /dashboard/views/:viewId/panels/:panelId` |
+| `dashboard_delete_panel` | `DELETE /dashboard/views/:viewId/panels/:panelId` |
+| `dashboard_update_panel_layout` | `PATCH /dashboard/views/:viewId/panels/layout` |
+| `dashboard_get_panel_data` | `POST /dashboard/views/:viewId/panels/:panelId/data` |
+| `dashboard_get_admin_view` | `GET /dashboard/admin-view` |
+| `dashboard_preview_admin_query` | `POST /dashboard/admin-query/preview` |
+| `dashboard_create_admin_panel` | `POST /dashboard/admin-view/panels` |
+| `dashboard_update_admin_panel` | `PATCH /dashboard/admin-view/panels/:panelId` |
+| `dashboard_delete_admin_panel` | `DELETE /dashboard/admin-view/panels/:panelId` |
+| `dashboard_update_admin_panel_layout` | `PATCH /dashboard/admin-view/panels/layout` |
+| `dashboard_get_admin_panel_data` | `POST /dashboard/admin-view/panels/:panelId/data` |
+
+Panel-mutating tool arguments are camelCase (`chartType`, `posX`, …) and get
+mapped onto the backend's snake_case body shape (`chart_type`, `pos_x`, …)
+inside `handleToolCall`. Update the table above alongside any future route
+changes in `backend/plugin.go`.
+
+> **Note:** an earlier version of this file exposed
+> `dashboard_project_overview`/`dashboard_instance_overview`, calling
+> `/dashboard/overview` and `/dashboard/overview-all` — routes that predate
+> the panel-based redesign and were never implemented in `backend/plugin.go`
+> (nor called by the frontend). Those dead route entries have been removed
+> from `plugin.json`, and the MCP tools above replace them with the current
+> panel/view API surface.
+
+### Skills (`skills/`)
+
+`skills/paca-dashboard-builder/SKILL.md` teaches an AI agent how to build a
+dashboard end-to-end using the tools above: resolving the right view across
+the three scopes, the query safety model (the `{{project_id}}` placeholder,
+forbidden keywords, the implicit `LIMIT 500`), a schema reference for the
+host's task/sprint tables, and a library of copy-paste preset queries (status
+breakdowns, burndown/burnup, workload, overdue tasks, sprint velocity) so the
+agent doesn't have to hand-write SQL against an unfamiliar schema. Registered
+in `plugin.json`'s `skills.names`.
 
 ---
 
