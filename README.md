@@ -13,6 +13,8 @@ scopes:
    Add a second "Dashboard"-type view from the host — the plugin no longer
    manages its own list/switcher.
 
+![Dashboard demo](docs/dashboard-demo.gif)
+
 ---
 
 ## Architecture
