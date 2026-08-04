@@ -3,6 +3,7 @@
   "displayName": "Dashboard",
   "description": "Customizable panel-based dashboard builder (charts, tables, text) across the project dashboard page, the admin dashboard page, and a single dashboard per Integration-page view (backlog/sprint/timeline).",
   "version": "0.3.0",
+  "minCoreVersion": "v0.11.2",
   "permissions": ["db.read", "db.write", "events.subscribe", "cache"],
   "backend": {
     "eventSubscriptions": [],
