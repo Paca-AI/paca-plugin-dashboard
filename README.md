@@ -241,16 +241,21 @@ go test -race -v ./...
 # Lint
 golangci-lint run --timeout=5m
 
-# Build WASM binary
-GOOS=wasip1 GOARCH=wasm go build -o dashboard.wasm .
-# (or, for the c-shared variant some tooling expects:)
-GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o dashboard.wasm .
+# Build WASM binary (requires TinyGo — see https://tinygo.org/getting-started/install/)
+tinygo build -target=wasip1 -buildmode=c-shared -o dashboard.wasm .
 ```
 
+`-buildmode=c-shared` is required, not optional: without it, TinyGo doesn't
+wire up the WASI reactor entry point (`_initialize`), and every call into
+the plugin panics at runtime with "//go:wasmexport function called before
+runtime initialization" — it still compiles fine without the flag, so this
+only shows up once the plugin is actually loaded.
+
 `main.go` carries a `//go:build wasip1` tag, so a plain `go build ./...`
-without `GOOS=wasip1 GOARCH=wasm` will always fail with "function main is
-undeclared in the main package" — this is expected, not a real error.
-`go vet`/`go test` work fine without the cross-compile target.
+without `-target=wasip1` (or, with the standard Go compiler, `GOOS=wasip1
+GOARCH=wasm`) will always fail with "function main is undeclared in the
+main package" — this is expected, not a real error. `go vet`/`go test` work
+fine without the cross-compile target.
 
 **Test coverage note:** `plugintest`'s `InMemoryDB` only supports simple
 `SELECT`/`INSERT`/`UPDATE`/`DELETE` statements with `$N`-bound parameters —
