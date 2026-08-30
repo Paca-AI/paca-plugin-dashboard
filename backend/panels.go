@@ -294,10 +294,10 @@ func (p *dashboardPlugin) updatePanelLayoutForView(req *plugin.Request, res *plu
 		return
 	}
 
-	type body struct {
+	type updatePanelLayoutBody struct {
 		Panels []panelLayoutEntry `json:"panels"`
 	}
-	b, err := plugin.JSONBody[body](req)
+	b, err := plugin.JSONBody[updatePanelLayoutBody](req)
 	if err != nil {
 		res.Error(400, "invalid request body")
 		return
@@ -390,10 +390,10 @@ func (p *dashboardPlugin) runPanelQueryForView(req *plugin.Request, res *plugin.
 // equivalent) — validates and runs a not-yet-saved query so the panel
 // editor can show a live preview before the user hits Save.
 func (p *dashboardPlugin) previewQuery(req *plugin.Request, res *plugin.Response, requireProjectScope bool) {
-	type body struct {
+	type previewQueryBody struct {
 		Query string `json:"query"`
 	}
-	b, err := plugin.JSONBody[body](req)
+	b, err := plugin.JSONBody[previewQueryBody](req)
 	if err != nil {
 		res.Error(400, "invalid request body")
 		return
