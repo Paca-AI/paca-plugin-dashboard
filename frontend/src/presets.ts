@@ -108,17 +108,19 @@ ORDER BY task_count DESC`,
   {
     id: "open-tasks-by-assignee",
     title: "Open tasks by assignee",
-    description: "Unfinished task load per assignee (member id shown; unassigned tasks grouped separately).",
+    description: "Unfinished task load per assignee (unassigned tasks grouped separately).",
     panelType: "chart",
     chartType: "bar",
     scopes: ["project", "integration"],
-    query: `SELECT COALESCE(pm.id::text, 'Unassigned') AS assignee, COUNT(DISTINCT t.id) AS open_tasks
+    query: `SELECT COALESCE(NULLIF(u.full_name, ''), u.username, a.name, 'Unassigned') AS assignee, COUNT(DISTINCT t.id) AS open_tasks
 FROM tasks t
 JOIN task_statuses ts ON ts.id = t.status_id
 LEFT JOIN task_assignees ta ON ta.task_id = t.id
 LEFT JOIN project_members pm ON pm.id = ta.member_id
+LEFT JOIN users u ON u.id = pm.user_id
+LEFT JOIN agents a ON a.id = pm.agent_id
 WHERE t.project_id = {{project_id}} AND ts.category != 'done' AND t.deleted_at IS NULL
-GROUP BY pm.id
+GROUP BY pm.id, u.full_name, u.username, a.name
 ORDER BY open_tasks DESC`,
   },
   {
