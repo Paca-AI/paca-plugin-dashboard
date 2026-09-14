@@ -143,13 +143,18 @@ the authoritative implementation:
    `COPY`/`CALL`/`EXPLAIN`/`VACUUM`, and nothing after a trailing `;`.
 2. No `information_schema`/`pg_catalog`/`pg_*` introspection, `dblink`,
    `lo_*`, or `COPY` — closes standard sandbox-escape tricks.
-3. **Project/integration-scoped queries must contain the literal
-   placeholder `{{project_id}}`** somewhere in a `WHERE`/`ON`/`HAVING`
-   clause. The guard substitutes it with `$1` and binds the caller's real
+3. **Project/integration-scoped queries must use the literal placeholder
+   `{{project_id}}` exactly once, as a direct `<column> = {{project_id}}`
+   (or reversed) equality filter, with no bare `OR` anywhere in the
+   query.** The guard substitutes it with `$1` and binds the caller's real
    `project_id` — this is what actually prevents cross-project data
-   leakage, by forcing every project-scoped query to filter itself.
-   Admin-scope queries are intentionally cross-project and skip this
-   requirement (and reject the placeholder if present).
+   leakage, by forcing every project-scoped query to filter itself in a way
+   that can't be short-circuited (a duplicated/self-compared placeholder, a
+   comparison operator other than `=`, or a sibling `OR` can all make the
+   filter match regardless of project — see `validateProjectScopePlaceholder`
+   in `query_guard.go`). Need a multi-value filter? Use `IN (...)` instead
+   of `OR`. Admin-scope queries are intentionally cross-project and skip
+   this requirement (and reject the placeholder if present).
 4. An explicit `LIMIT 500` is appended when the query doesn't already
    declare one.
 
@@ -178,6 +183,78 @@ rather than risk a false negative.
 > `validateQuery` (backend enforcement) and `PanelEditor.tsx`'s SQL
 > textarea (frontend UX) — the two are independent of the rest of the
 > panel/view CRUD.
+
+### Authorization
+
+Access to the dashboard *page* is gated separately from access to individual
+*data*. Two custom permissions, declared in `plugin.json` and each available
+at both project and global **permission** scope (the same key checked
+against two different permission maps, mirroring `paca-plugin-time-logging`).
+This is the only "scope" the permission system itself has —
+`requirePermissions`/`customPermissions` entries are always either
+`"project"` (checked against the caller's per-project permission map) or
+`"global"` (checked against their global permission map). There is no third,
+"admin" permission scope, even though the paragraphs below also need to talk
+about `dashboard_views.scope`, an unrelated data-model column on this
+plugin's own table that happens to have a value literally named `"admin"` —
+every occurrence of "admin" below refers to that column's value or to the
+`/admin/*`-routed pages, never to a permission scope:
+
+- **`dashboard.view`** — see the project's (or admin's) Dashboard page and
+  its panels.
+- **`dashboard.manage`** — create, edit, delete, and rearrange panels, and
+  run query previews while authoring them. Implies `dashboard.view` for
+  loading purposes — a role with only `dashboard.manage` isn't blocked from
+  the page itself.
+
+Every project-*permission*-scope backend route requires `dashboard.view` at
+minimum, declared directly in the manifest's `requirePermissions` —
+including the routes shared with dashboards whose `dashboard_views.scope`
+is `"integration"` (embedded in Backlog/Sprint/Timeline, see "Integration
+view architecture" above), which the manifest can't distinguish from the
+`dashboard_views.scope == "project"` singleton by path alone. There is no
+"always open" carve-out for the embedded surface: `dashboard.view` gates
+the whole feature uniformly, project page and embedded views alike.
+`views.go`'s `loadViewWithPanels` and `getOrCreate*View` handlers re-check
+this in-handler too, as defense-in-depth against the manifest ever being
+misedited — not because the manifest leaves any gap today.
+
+On top of that `dashboard.view` floor, mutating a panel requires a second,
+narrower check in `panels.go`'s `canManagePanel`, which resolves the
+request's `dashboard_views.scope` value and picks the (project-permission-
+scope) permission that matches:
+
+- row's `dashboard_views.scope` is `"project"`: requires `dashboard.manage`.
+- row's `dashboard_views.scope` is `"integration"`: requires `views.write`
+  instead of `dashboard.manage` — an integration dashboard is embedded in,
+  and shares the write bar of, the view that hosts it. `views.write` is
+  exactly the permission that already lets an ordinary project Editor
+  create that hosting view in the first place; requiring anything higher
+  here would be a dead end (create the view, never populate it).
+- row's `dashboard_views.scope` is `"admin"`: never reaches this function —
+  those routes are already fully gated at the manifest level by
+  `dashboard.manage` at **permission** scope `"global"`.
+
+This two-layer shape (`dashboard.view` as a uniform manifest-level floor,
+a data-scope-specific manage permission checked in-handler on top) is
+deliberate: `requirePermissions` ANDs every permission it lists, so putting
+`dashboard.manage` directly in the manifest on a route shared with the
+`"integration"` data scope would reject a `views.write`-holding Editor
+before the in-handler check ever ran.
+
+`POST /dashboard/query/preview` (project permission scope) has no
+`dashboard_views` row to resolve a data scope from — it validates a
+not-yet-saved query directly against the caller's project, and is used by
+both the project-dashboard editor and the integration-view editor with no
+way to tell which from the request alone. Past the manifest's
+`dashboard.view` floor, it requires
+`dashboard.manage` in-handler (matching that permission's own description,
+which promises coverage of "running query previews while authoring"
+panels). The one remaining, accepted gap: a hand-crafted custom role
+granted only `views.write` (able to populate an integration dashboard)
+can't preview a query for it through this route — closing that fully would
+need the frontend to pass a `viewId` so the backend can resolve scope, a
+small API contract change tracked as a follow-up rather than done here.
 
 ### MCP (`mcp/`)
 
@@ -309,20 +386,19 @@ bun run build
 ### `project.page` — `ProjectDashboardPage`
 
 Routed at `/projects/:projectId/plugins/com.paca.dashboard/dashboard` via
-the `project` nav item declared in `plugin.json`. Fetches (get-or-creates)
-the project's singleton dashboard view and renders the shared panel-grid
-UI with edit permissions gated by the route's own `projects.write`
-middleware (panel mutation routes require `projects.write`; read routes
-require only `projects.read`).
+the `project` nav item declared in `plugin.json`, requiring the
+`dashboard.view` custom permission (see "Authorization" above). Fetches
+(get-or-creates) the project's singleton dashboard view and renders the
+shared panel-grid UI, with panel mutations requiring `dashboard.manage`.
 
 ### `admin.page` — `AdminDashboardPage`
 
 Routed at `/admin/plugins/com.paca.dashboard/dashboard` via the `admin` nav
-item declared in `plugin.json`; gated by the built-in `users.write` global
-permission (same gate as the host's other admin pages). Fetches
-(get-or-creates) the instance-wide singleton dashboard view; its panel
-queries are cross-project and do not require the `{{project_id}}`
-placeholder.
+item declared in `plugin.json`, requiring the global-scope `dashboard.view`
+custom permission (panel mutations require `dashboard.manage`) — see
+"Authorization" above. Fetches (get-or-creates) the instance-wide singleton
+dashboard view; its panel queries are cross-project and do not require the
+`{{project_id}}` placeholder.
 
 ### `view` — `DashboardIntegrationView`
 

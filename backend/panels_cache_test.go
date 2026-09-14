@@ -132,22 +132,36 @@ func TestUpdatePanel_InvalidatesCachedData(t *testing.T) {
 
 	// Narrowing the panel's query must invalidate its cached result —
 	// otherwise this would keep serving the old 2-row result for up to
-	// panelDataCacheTTL after the edit. The {{project_id}} placeholder is
-	// substituted for every occurrence of $1 (see query_guard.go), so
-	// repeating it as a second condition against `id` — which never equals
-	// the project_id string — deterministically narrows the seeded 2-row
-	// result to 0 without needing a second bindable parameter.
-	tc.Call("PATCH", "/dashboard/views/:viewId/panels/:panelId",
+	// panelDataCacheTTL after the edit. query_guard.go now requires the
+	// {{project_id}} placeholder to be used as a direct "project_id =
+	// {{project_id}}" equality filter and rejects comparing it against any
+	// other column (see validateProjectScopePlaceholder /
+	// placeholderComparisonRe) — so the previous version of this test,
+	// which compared it against tasks.id to force a deterministic 0-row
+	// result, is no longer a valid panel query. That's exactly the class of
+	// decoy filter the guard now closes (a placeholder-equality against an
+	// unrelated column doesn't actually scope the returned rows), so this
+	// test needs a different way to get a deterministic, different-from-
+	// before result. Querying dashboard_views instead of tasks does that
+	// while still using a single valid `project_id = {{project_id}}`
+	// filter: this project has exactly one dashboard_views row (the view
+	// fetched at the top of this test), versus tasks' two, and
+	// plugintest.InMemoryDB's minimal parser (col = $N chains only) has no
+	// trouble with it.
+	patchRes := tc.Call("PATCH", "/dashboard/views/:viewId/panels/:panelId",
 		withPathParams(callerReq(), map[string]string{"viewId": view.ID, "panelId": panel.ID}).
 			WithJSONBody(map[string]any{
 				"type":  "table",
 				"title": "My tasks",
-				"query": "SELECT id, title FROM tasks WHERE project_id = {{project_id}} AND id = {{project_id}}",
+				"query": "SELECT id, name FROM dashboard_views WHERE project_id = {{project_id}}",
 			}))
+	if patchRes.StatusCode != 200 {
+		t.Fatalf("expected 200 updating the panel's query, got %d: %s", patchRes.StatusCode, patchRes.BodyString())
+	}
 
 	second := panelDataRows(t, tc.Call("POST", "/dashboard/views/:viewId/panels/:panelId/data", dataReq))
-	if len(second) != 0 {
-		t.Fatalf("expected the updated query's 0-row result after cache invalidation, got %d: %+v", len(second), second)
+	if len(second) != 1 {
+		t.Fatalf("expected the updated query's 1-row result (this project's own dashboard_views row) after cache invalidation, got %d: %+v", len(second), second)
 	}
 }
 

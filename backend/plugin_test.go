@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	plugin "github.com/Paca-AI/plugin-sdk-go"
@@ -17,6 +18,11 @@ const testProjectID = "project-1"
 func setupPlugin(t *testing.T) *plugintest.Context {
 	t.Helper()
 	tc := plugintest.NewContext(t)
+	// Default test caller has full dashboard access; tests for the
+	// permission gate itself (TestLoadView_RequiresDashboardView etc.)
+	// explicitly revoke these to exercise the denied path.
+	tc.Permissions.Grant("dashboard.view")
+	tc.Permissions.Grant("dashboard.manage")
 
 	tc.DB.SeedRows("dashboard_views",
 		[]string{"id", "project_id", "scope", "host_view_id", "name", "created_by", "created_at", "updated_at"},
@@ -252,6 +258,66 @@ func TestGetView_CrossProjectRejected(t *testing.T) {
 		withPathParams(otherProjectReq, map[string]string{"viewId": created.ID}))
 	if res.StatusCode != 404 {
 		t.Fatalf("expected 404 (view belongs to a different project), got %d: %s", res.StatusCode, res.BodyString())
+	}
+}
+
+// ── Dashboard permission gate (dashboard.view / dashboard.manage) ───────────
+
+func TestGetOrCreateProjectView_RequiresDashboardView(t *testing.T) {
+	tc := setupPlugin(t)
+	tc.Permissions.Revoke("dashboard.view")
+	tc.Permissions.Revoke("dashboard.manage")
+
+	res := tc.Call("GET", "/dashboard/view", callerReq())
+	if res.StatusCode != 403 {
+		t.Fatalf("expected 403 for a caller with neither dashboard.view nor dashboard.manage, got %d: %s", res.StatusCode, res.BodyString())
+	}
+}
+
+func TestGetOrCreateProjectView_ManageAloneIsSufficientToView(t *testing.T) {
+	tc := setupPlugin(t)
+	tc.Permissions.Revoke("dashboard.view")
+	// dashboard.manage stays granted (setupPlugin's default) — manage alone
+	// must still be enough to load the view.
+
+	res := tc.Call("GET", "/dashboard/view", callerReq())
+	if res.StatusCode != 200 {
+		t.Fatalf("expected 200 for a caller with only dashboard.manage, got %d: %s", res.StatusCode, res.BodyString())
+	}
+}
+
+// TestGetOrCreateIntegrationView_RequiresDashboardView pins the current
+// design: dashboard.view gates every dashboard surface uniformly, including
+// integration-scope dashboards embedded in Backlog/Sprint/Timeline — not
+// just the dedicated project-scope singleton page. Revoking dashboard.view
+// from a role now hides the whole feature, embedded views included; there
+// is no "always open" carve-out for the embedded surface.
+func TestGetOrCreateIntegrationView_RequiresDashboardView(t *testing.T) {
+	tc := setupPlugin(t)
+	tc.Permissions.Revoke("dashboard.view")
+	tc.Permissions.Revoke("dashboard.manage")
+
+	res := tc.Call("GET", "/dashboard/view/:hostViewId",
+		withPathParams(callerReq(), map[string]string{"hostViewId": testHostViewID}))
+	if res.StatusCode != 403 {
+		t.Fatalf("expected 403 for an integration-scope view without dashboard.view, got %d: %s", res.StatusCode, res.BodyString())
+	}
+}
+
+func TestCreatePanel_RequiresDashboardManage(t *testing.T) {
+	tc := setupPlugin(t)
+	view := decodeData[dashboardView](t, tc.Call("GET", "/dashboard/view", callerReq()))
+	tc.Permissions.Revoke("dashboard.manage") // dashboard.view stays granted
+
+	res := tc.Call("POST", "/dashboard/views/:viewId/panels",
+		withPathParams(callerReq(), map[string]string{"viewId": view.ID}).
+			WithJSONBody(map[string]any{
+				"type":    "text",
+				"title":   "Notes",
+				"content": "should be rejected before it's ever validated",
+			}))
+	if res.StatusCode != 403 {
+		t.Fatalf("expected 403 for a caller with dashboard.view but not dashboard.manage, got %d: %s", res.StatusCode, res.BodyString())
 	}
 }
 
@@ -501,6 +567,57 @@ func TestRunPanelQuery_ScopesToOwnProject(t *testing.T) {
 	}
 }
 
+// TestPreviewQuery_RequiresDashboardManage pins the fix for the
+// query/preview route relying solely on the manifest's projects.read floor
+// with no in-handler check at all — dashboard.manage's own description
+// promises it covers "running query previews while authoring" panels, so a
+// caller without it must be rejected here too, not just on save.
+func TestPreviewQuery_RequiresDashboardManage(t *testing.T) {
+	tc := setupPlugin(t)
+	tc.Permissions.Revoke("dashboard.manage")
+
+	res := tc.Call("POST", "/dashboard/query/preview",
+		callerReq().WithJSONBody(map[string]string{
+			"query": "SELECT id FROM tasks WHERE project_id = {{project_id}}",
+		}))
+	if res.StatusCode != 403 {
+		t.Fatalf("expected 403 for a caller without dashboard.manage, got %d: %s", res.StatusCode, res.BodyString())
+	}
+}
+
+// TestCreatePanel_IntegrationScope_RequiresViewsWrite pins the fix for
+// integration-scope panel mutations previously having no permission check
+// at all in-handler (only the manifest's projects.write, which an ordinary
+// Editor — who can create the hosting integration view via views.write —
+// doesn't hold, making the view creatable but never populatable). Panel
+// mutations on an integration view now require views.write specifically,
+// not dashboard.manage — matching the permission that already gates
+// creating the view itself.
+func TestCreatePanel_IntegrationScope_RequiresViewsWrite(t *testing.T) {
+	tc := setupPlugin(t)
+	view := decodeData[dashboardView](t, tc.Call("GET", "/dashboard/view/:hostViewId",
+		withPathParams(callerReq(), map[string]string{"hostViewId": testHostViewID})))
+
+	// dashboard.manage alone must NOT be sufficient for an integration view.
+	tc.Permissions.Revoke("views.write")
+	denied := tc.Call("POST", "/dashboard/views/:viewId/panels",
+		withPathParams(callerReq(), map[string]string{"viewId": view.ID}).
+			WithJSONBody(map[string]any{"type": "text", "title": "Notes", "content": "x"}))
+	if denied.StatusCode != 403 {
+		t.Fatalf("expected 403 for an integration view without views.write, got %d: %s", denied.StatusCode, denied.BodyString())
+	}
+
+	// views.write alone (without dashboard.manage) must be sufficient.
+	tc.Permissions.Revoke("dashboard.manage")
+	tc.Permissions.Grant("views.write")
+	allowed := tc.Call("POST", "/dashboard/views/:viewId/panels",
+		withPathParams(callerReq(), map[string]string{"viewId": view.ID}).
+			WithJSONBody(map[string]any{"type": "text", "title": "Notes", "content": "x"}))
+	if allowed.StatusCode != 201 {
+		t.Fatalf("expected 201 for an integration view with views.write but not dashboard.manage, got %d: %s", allowed.StatusCode, allowed.BodyString())
+	}
+}
+
 func TestPreviewQuery_RejectsForbiddenKeyword(t *testing.T) {
 	tc := setupPlugin(t)
 
@@ -585,6 +702,129 @@ func TestValidateQuery_RejectsMultipleStatements(t *testing.T) {
 func TestValidateQuery_RejectsDollarOneDirectUse(t *testing.T) {
 	if _, err := validateQuery("SELECT id FROM tasks WHERE project_id = {{project_id}} AND id = $1", true); err == nil {
 		t.Fatal("expected error: $1 is reserved for the injected project_id")
+	}
+}
+
+// TestValidateQuery_RejectsDuplicatedPlaceholderTautology pins the fix for a
+// real cross-project data leak: the old guard only checked that
+// {{project_id}} appeared *somewhere* in the query, so a self-comparison
+// like this one passed validation and became an always-true "$1 = $1"
+// filter after substitution — returning every row in the table, across
+// every project, regardless of the caller's own project_id.
+func TestValidateQuery_RejectsDuplicatedPlaceholderTautology(t *testing.T) {
+	if _, err := validateQuery("SELECT id FROM tasks WHERE '{{project_id}}' = '{{project_id}}'", true); err == nil {
+		t.Fatal("expected error: duplicated placeholder forms an always-true tautology")
+	}
+}
+
+// TestValidateQuery_RejectsOrShortCircuit pins the fix for the second
+// concrete bypass the old "contains the token somewhere" check allowed: a
+// correctly-used placeholder rendered moot by a sibling top-level OR, which
+// would return rows regardless of project since the OR's other branch is
+// always true.
+func TestValidateQuery_RejectsOrShortCircuit(t *testing.T) {
+	if _, err := validateQuery("SELECT id FROM tasks WHERE 1=1 OR project_id = {{project_id}}", true); err == nil {
+		t.Fatal("expected error: a top-level OR can bypass the project filter")
+	}
+}
+
+// TestValidateQuery_RejectsNonEqualityPlaceholderUse guards against a
+// variant of the same class of bug: a comparison operator other than "="
+// (e.g. "!=") inverts the filter into "every other project" instead of
+// "just mine".
+func TestValidateQuery_RejectsNonEqualityPlaceholderUse(t *testing.T) {
+	if _, err := validateQuery("SELECT id FROM tasks WHERE project_id != {{project_id}}", true); err == nil {
+		t.Fatal("expected error: != inverts the project filter instead of scoping to it")
+	}
+}
+
+// TestValidateQuery_AllowsOrInsideStringLiteral guards against a
+// too-aggressive fix: "OR" appearing as ordinary text inside a quoted
+// string literal (not the SQL keyword) must not trip the OR ban.
+func TestValidateQuery_AllowsOrInsideStringLiteral(t *testing.T) {
+	safe, err := validateQuery(
+		"SELECT id FROM tasks WHERE project_id = {{project_id}} AND title = 'Manager or Director'", true)
+	if err != nil {
+		t.Fatalf("unexpected error for OR inside a string literal: %v", err)
+	}
+	if !strings.Contains(safe, "Manager or Director") {
+		t.Fatalf("expected the string literal to survive validation unchanged, got %q", safe)
+	}
+}
+
+// TestValidateQuery_RejectsUnion pins the fix for a concrete cross-project
+// leak: none of the placeholder/OR checks understand a second SELECT
+// contributing rows via UNION, so a properly-scoped first branch used to be
+// enough to pass validation while an unfiltered second branch returned
+// every project's rows.
+func TestValidateQuery_RejectsUnion(t *testing.T) {
+	if _, err := validateQuery(
+		"SELECT id, title FROM tasks WHERE project_id = {{project_id}} UNION SELECT id, title FROM tasks", true); err == nil {
+		t.Fatal("expected error: UNION can append unfiltered rows from a second SELECT")
+	}
+}
+
+// TestValidateQuery_RejectsPlaceholderInsideSubquery pins the fix for a
+// decoy filter: a placeholder-equality that satisfies a naive text search
+// while sitting inside an unrelated nested subquery doesn't actually
+// constrain which rows the outer query returns.
+func TestValidateQuery_RejectsPlaceholderInsideSubquery(t *testing.T) {
+	if _, err := validateQuery(
+		"SELECT id, title FROM tasks WHERE (SELECT 1 FROM projects WHERE id = {{project_id}}) IS NOT NULL", true); err == nil {
+		t.Fatal("expected error: placeholder used inside a nested subquery doesn't filter the outer query's rows")
+	}
+}
+
+// TestValidateQuery_RejectsPlaceholderAgainstWrongColumn pins the fix for a
+// decoy cross join: comparing the placeholder against an unrelated column
+// (here projects.id, a different table's primary key) leaves the actually
+// -returned table's rows completely unfiltered.
+func TestValidateQuery_RejectsPlaceholderAgainstWrongColumn(t *testing.T) {
+	if _, err := validateQuery(
+		"SELECT id, title FROM tasks, projects WHERE projects.id = {{project_id}}", true); err == nil {
+		t.Fatal("expected error: placeholder must filter a project_id column, not an unrelated column")
+	}
+}
+
+// TestValidateQuery_RejectsOrHiddenByQuotedIdentifier pins the fix for a
+// string-tracking desync: an apostrophe inside a double-quoted identifier
+// (valid SQL, e.g. an alias) used to desync the old single-quote-only
+// literal tracker, making everything after it invisible to the OR check.
+func TestValidateQuery_RejectsOrHiddenByQuotedIdentifier(t *testing.T) {
+	if _, err := validateQuery(
+		`SELECT id, 1 AS "it's" FROM tasks WHERE project_id = {{project_id}} OR 1=1`, true); err == nil {
+		t.Fatal("expected error: a bare OR must still be caught after a double-quoted identifier containing an apostrophe")
+	}
+}
+
+// TestValidateQuery_AllowsQualifiedProjectIdInJoin guards against a
+// too-aggressive fix: an ordinary explicit JOIN, with the placeholder
+// filtering an alias-qualified project_id column, is the documented
+// supported shape and must keep working.
+func TestValidateQuery_AllowsQualifiedProjectIdInJoin(t *testing.T) {
+	safe, err := validateQuery(
+		"SELECT t.id, u.username FROM tasks t JOIN users u ON u.id = t.assignee_id WHERE t.project_id = {{project_id}}", true)
+	if err != nil {
+		t.Fatalf("unexpected error for an alias-qualified project_id filter in a joined query: %v", err)
+	}
+	if !containsLimit(safe) {
+		t.Fatalf("expected LIMIT to be appended, got %q", safe)
+	}
+}
+
+// TestValidateQuery_AllowsCteWithTopLevelFilter guards against a
+// too-aggressive fix: a WITH/CTE query is a documented supported shape as
+// long as the project_id filter is in the outer query's own WHERE, which is
+// what every real usage pattern in this file does.
+func TestValidateQuery_AllowsCteWithTopLevelFilter(t *testing.T) {
+	safe, err := validateQuery(
+		"WITH recent AS (SELECT id, title FROM tasks ORDER BY created_at DESC) "+
+			"SELECT * FROM recent WHERE project_id = {{project_id}}", true)
+	if err != nil {
+		t.Fatalf("unexpected error for a CTE with the placeholder filter at the outer top level: %v", err)
+	}
+	if !containsLimit(safe) {
+		t.Fatalf("expected LIMIT to be appended, got %q", safe)
 	}
 }
 

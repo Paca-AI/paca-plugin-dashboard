@@ -131,6 +131,57 @@ func (p *dashboardPlugin) previewAdminQuery(req *plugin.Request, res *plugin.Res
 	p.previewQuery(req, res, false)
 }
 
+// canManagePanel reports whether the caller may create/edit/delete/reorder
+// panels on a view whose dashboard_views.scope column holds viewScope
+// ("project" | "integration" | "admin" — a data-model value describing
+// which kind of dashboard the row is, NOT a permission scope; the
+// permission system itself only ever has two scopes, "project" and
+// "global", set on the requirePermissions/customPermissions entries in
+// plugin.json). A single permission decides the answer here — not two —
+// which is exactly why the manifest's own requirePermissions floor on
+// these routes is deliberately just projects.read rather than
+// projects.write: requirePermissions ANDs every listed permission, so if
+// the manifest floor were projects.write, a role granted only
+// dashboard.manage would 403 at the middleware layer before this in-handler
+// check ever ran, silently defeating the point of a dedicated permission.
+//
+//   - viewScope == "project": requires dashboard.manage (a project-scope
+//     permission, i.e. checked against the caller's per-project permission
+//     map).
+//   - viewScope == "integration": requires views.write instead of
+//     dashboard.manage — an integration dashboard is embedded in, and
+//     shares the write bar of, the view that hosts it. views.write is
+//     exactly the permission that already lets an ordinary Editor create
+//     that hosting view in the first place; requiring anything higher here
+//     would be a dead end (create the view, never populate it). Also a
+//     project-scope permission.
+//   - viewScope == "admin": never reaches this function — loadViewWithPanels
+//     only lets projectID == "" through the admin routes, which are already
+//     fully gated at the manifest level by dashboard.manage checked at
+//     permission scope "global" (not "admin" — there is no such permission
+//     scope).
+func (p *dashboardPlugin) canManagePanel(viewScope string) bool {
+	if viewScope == "integration" {
+		return p.perm.Check("views.write")
+	}
+	return p.perm.Check("dashboard.manage")
+}
+
+// requireManagePanel enforces canManagePanel for view, writing the shared
+// 403 response and returning false when the caller may not manage it — the
+// same check every panel-mutation handler below needs before touching
+// view's panels. Admin-scope views skip the check entirely (loadViewWithPanels
+// only lets projectID == "" through the admin routes, which are already
+// fully gated at the manifest level), matching canManagePanel's own doc
+// comment on why viewScope == "admin" never reaches canManagePanel itself.
+func (p *dashboardPlugin) requireManagePanel(view *dashboardView, res *plugin.Response) bool {
+	if view.Scope != "admin" && !p.canManagePanel(view.Scope) {
+		res.Error(403, "you don't have permission to manage this dashboard")
+		return false
+	}
+	return true
+}
+
 // ── Shared implementations ───────────────────────────────────────────────────
 
 // createPanelForView handles POST .../:viewId/panels for any scope.
@@ -142,6 +193,9 @@ func (p *dashboardPlugin) createPanelForView(req *plugin.Request, res *plugin.Re
 	}
 	view, loaded := p.loadViewWithPanels(viewID, projectID, res)
 	if !loaded {
+		return
+	}
+	if !p.requireManagePanel(view, res) {
 		return
 	}
 
@@ -194,6 +248,9 @@ func (p *dashboardPlugin) updatePanelForView(req *plugin.Request, res *plugin.Re
 	panelID := req.PathParam("panelId")
 	view, loaded := p.loadViewWithPanels(viewID, projectID, res)
 	if !loaded {
+		return
+	}
+	if !p.requireManagePanel(view, res) {
 		return
 	}
 	if !p.panelBelongsToView(panelID, viewID, res) {
@@ -261,7 +318,11 @@ func (p *dashboardPlugin) deletePanelForView(req *plugin.Request, res *plugin.Re
 		return
 	}
 	panelID := req.PathParam("panelId")
-	if _, ok2 := p.loadViewWithPanels(viewID, projectID, res); !ok2 {
+	view, loaded := p.loadViewWithPanels(viewID, projectID, res)
+	if !loaded {
+		return
+	}
+	if !p.requireManagePanel(view, res) {
 		return
 	}
 	if !p.panelBelongsToView(panelID, viewID, res) {
@@ -290,7 +351,11 @@ func (p *dashboardPlugin) updatePanelLayoutForView(req *plugin.Request, res *plu
 	if !viewOK {
 		return
 	}
-	if _, ok2 := p.loadViewWithPanels(viewID, projectID, res); !ok2 {
+	view, loaded := p.loadViewWithPanels(viewID, projectID, res)
+	if !loaded {
+		return
+	}
+	if !p.requireManagePanel(view, res) {
 		return
 	}
 
@@ -390,6 +455,17 @@ func (p *dashboardPlugin) runPanelQueryForView(req *plugin.Request, res *plugin.
 // equivalent) — validates and runs a not-yet-saved query so the panel
 // editor can show a live preview before the user hits Save.
 func (p *dashboardPlugin) previewQuery(req *plugin.Request, res *plugin.Response, requireProjectScope bool) {
+	// The admin path (requireProjectScope == false) is already fully gated
+	// at the manifest level (dashboard.manage, global scope) — no view to
+	// resolve a scope from here, so this only applies the project-scope
+	// check. dashboard.manage's own description promises it covers "running
+	// query previews while authoring" panels, so this must hold even though
+	// the manifest's own floor is the non-restrictive projects.read (same
+	// reasoning as canManagePanel).
+	if requireProjectScope && !p.canManagePanel("project") {
+		res.Error(403, "you don't have permission to manage this dashboard")
+		return
+	}
 	type previewQueryBody struct {
 		Query string `json:"query"`
 	}
