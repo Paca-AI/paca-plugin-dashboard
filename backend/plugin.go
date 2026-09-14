@@ -36,6 +36,7 @@ type dashboardPlugin struct {
 	db    *plugin.DB
 	cache *plugin.Cache
 	log   *plugin.Logger
+	perm  *plugin.Permissions
 }
 
 // Init registers all routes on the provided context.
@@ -43,6 +44,7 @@ func (p *dashboardPlugin) Init(ctx *plugin.Context) error {
 	p.db = ctx.DB()
 	p.cache = ctx.Cache()
 	p.log = ctx.Log()
+	p.perm = ctx.Permissions()
 
 	// ── Project-scope dashboard (get-or-create singleton) ──────────────────
 	ctx.Route("GET", "/dashboard/view", p.getOrCreateProjectView)

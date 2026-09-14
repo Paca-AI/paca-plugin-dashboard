@@ -5,6 +5,32 @@
   "version": "0.3.4",
   "minCoreVersion": "v0.13.3",
   "permissions": ["db.read", "db.write", "events.subscribe", "cache"],
+  "customPermissions": [
+    {
+      "key": "dashboard.view",
+      "label": "View dashboard",
+      "description": "View the project's \"Dashboard\" page and its panels. Does not affect the per-view dashboards embedded in Backlog/Sprint/Timeline pages, which any project member can already see.",
+      "scope": "project"
+    },
+    {
+      "key": "dashboard.manage",
+      "label": "Manage dashboard",
+      "description": "Create, edit, delete, and rearrange panels on the project's \"Dashboard\" page, and run query previews while authoring them.",
+      "scope": "project"
+    },
+    {
+      "key": "dashboard.view",
+      "label": "View dashboard",
+      "description": "View the admin-sidebar \"Dashboard\" page — the instance-wide, cross-project dashboard.",
+      "scope": "global"
+    },
+    {
+      "key": "dashboard.manage",
+      "label": "Manage dashboard",
+      "description": "Create, edit, delete, and rearrange panels on the admin-sidebar \"Dashboard\" page, and run query previews while authoring them.",
+      "scope": "global"
+    }
+  ],
   "backend": {
     "eventSubscriptions": [],
     "routes": [
@@ -14,7 +40,7 @@
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
-          { "name": "requirePermissions", "scope": "project", "permissions": ["projects.read"] }
+          { "name": "requirePermissions", "scope": "project", "permissions": ["dashboard.view"] }
         ]
       },
       {
@@ -23,7 +49,7 @@
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
-          { "name": "requirePermissions", "scope": "project", "permissions": ["projects.read"] }
+          { "name": "requirePermissions", "scope": "project", "permissions": ["dashboard.view"] }
         ]
       },
       {
@@ -32,7 +58,7 @@
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
-          { "name": "requirePermissions", "scope": "project", "permissions": ["projects.read"] }
+          { "name": "requirePermissions", "scope": "project", "permissions": ["dashboard.view"] }
         ]
       },
       {
@@ -41,7 +67,7 @@
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
-          { "name": "requirePermissions", "scope": "project", "permissions": ["projects.write"] }
+          { "name": "requirePermissions", "scope": "project", "permissions": ["dashboard.view"] }
         ]
       },
       {
@@ -50,7 +76,7 @@
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
-          { "name": "requirePermissions", "scope": "project", "permissions": ["projects.write"] }
+          { "name": "requirePermissions", "scope": "project", "permissions": ["dashboard.view"] }
         ]
       },
       {
@@ -59,7 +85,7 @@
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
-          { "name": "requirePermissions", "scope": "project", "permissions": ["projects.write"] }
+          { "name": "requirePermissions", "scope": "project", "permissions": ["dashboard.view"] }
         ]
       },
       {
@@ -68,7 +94,7 @@
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
-          { "name": "requirePermissions", "scope": "project", "permissions": ["projects.write"] }
+          { "name": "requirePermissions", "scope": "project", "permissions": ["dashboard.view"] }
         ]
       },
       {
@@ -77,7 +103,7 @@
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
-          { "name": "requirePermissions", "scope": "project", "permissions": ["projects.read"] }
+          { "name": "requirePermissions", "scope": "project", "permissions": ["dashboard.view"] }
         ]
       },
       {
@@ -86,7 +112,7 @@
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
-          { "name": "requirePermissions", "scope": "project", "permissions": ["projects.write"] }
+          { "name": "requirePermissions", "scope": "project", "permissions": ["dashboard.view"] }
         ]
       },
       {
@@ -95,7 +121,7 @@
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
-          { "name": "requirePermissions", "scope": "global", "permissions": ["users.write"] }
+          { "name": "requirePermissions", "scope": "global", "permissions": ["dashboard.view"] }
         ]
       },
       {
@@ -104,7 +130,7 @@
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
-          { "name": "requirePermissions", "scope": "global", "permissions": ["users.write"] }
+          { "name": "requirePermissions", "scope": "global", "permissions": ["dashboard.manage"] }
         ]
       },
       {
@@ -113,7 +139,7 @@
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
-          { "name": "requirePermissions", "scope": "global", "permissions": ["users.write"] }
+          { "name": "requirePermissions", "scope": "global", "permissions": ["dashboard.manage"] }
         ]
       },
       {
@@ -122,7 +148,7 @@
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
-          { "name": "requirePermissions", "scope": "global", "permissions": ["users.write"] }
+          { "name": "requirePermissions", "scope": "global", "permissions": ["dashboard.manage"] }
         ]
       },
       {
@@ -131,7 +157,7 @@
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
-          { "name": "requirePermissions", "scope": "global", "permissions": ["users.write"] }
+          { "name": "requirePermissions", "scope": "global", "permissions": ["dashboard.manage"] }
         ]
       },
       {
@@ -140,7 +166,7 @@
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
-          { "name": "requirePermissions", "scope": "global", "permissions": ["users.write"] }
+          { "name": "requirePermissions", "scope": "global", "permissions": ["dashboard.view"] }
         ]
       },
       {
@@ -149,7 +175,7 @@
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
-          { "name": "requirePermissions", "scope": "global", "permissions": ["users.write"] }
+          { "name": "requirePermissions", "scope": "global", "permissions": ["dashboard.manage"] }
         ]
       }
     ]
@@ -181,7 +207,8 @@
         "label": "Dashboard",
         "icon": "LayoutDashboard",
         "component": "ProjectDashboardPage",
-        "order": 5
+        "order": 5,
+        "requiredPermission": "dashboard.view"
       },
       {
         "scope": "admin",
@@ -189,7 +216,8 @@
         "label": "Dashboard",
         "icon": "LayoutDashboard",
         "component": "AdminDashboardPage",
-        "order": 5
+        "order": 5,
+        "requiredPermission": "dashboard.view"
       }
     ]
   },
