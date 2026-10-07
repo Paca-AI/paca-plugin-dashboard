@@ -7,14 +7,14 @@
  * forbidden keywords) — see the dev notes in that file before adding more.
  *
  * Burndown/burnup scoping: rather than making the user hand-edit a sprint
- * UUID into the query text, both sprint-based presets resolve "the active
- * sprint" via a correlated subquery on sprints.status = 'active'. If a
- * project runs multiple concurrent active sprints (schema allows it, see
- * database-schema.md), the subquery's own filter still yields a single
- * chart per query invocation — the query returns one row per day across
- * whichever active sprint(s) match; if that's ever ambiguous for a given
- * project, the user can copy the preset text and hand-tune the WHERE
- * clause (e.g. add `AND sprint_id = '<uuid>'` for a specific sprint).
+ * UUID into the query text, both sprint-based presets pick the project's most
+ * recently started active sprint and produce one row per day from its start
+ * date to today (generate_series), counting tasks with correlated subqueries.
+ * That shape is forced by the guard: compound SELECTs (UNION/INTERSECT/EXCEPT)
+ * are forbidden, and {{project_id}} must appear exactly once, as a top-level
+ * equality filter — so the sprint is selected in the outer query, not in a
+ * nested one. To chart a specific sprint instead, replace the start_date
+ * condition with `AND s.id = '<uuid>'`.
  */
 
 import type { ChartType, DashboardScopeKind, PanelType } from "./types";
@@ -30,7 +30,15 @@ export interface QueryPreset {
   query: string;
 }
 
-const ACTIVE_SPRINT = `(SELECT id FROM sprints WHERE project_id = {{project_id}} AND status = 'active' ORDER BY start_date DESC LIMIT 1)`;
+// One row per day of the project's most recently started active sprint.
+const ACTIVE_SPRINT_DAYS = `FROM sprints s
+CROSS JOIN generate_series(s.start_date::date, CURRENT_DATE, INTERVAL '1 day') AS d
+WHERE s.project_id = {{project_id}} AND s.status = 'active'
+  AND s.start_date = (SELECT MAX(s2.start_date) FROM sprints s2 WHERE s2.project_id = s.project_id AND s2.status = 'active')
+ORDER BY d`;
+const SCOPE_BY_DAY = `(SELECT COUNT(*) FROM tasks t WHERE t.sprint_id = s.id AND t.deleted_at IS NULL AND t.created_at::date <= d::date)`;
+const DONE_BY_DAY = `(SELECT COUNT(*) FROM tasks t JOIN task_statuses ts ON ts.id = t.status_id
+    WHERE t.sprint_id = s.id AND ts.category = 'done' AND t.deleted_at IS NULL AND t.updated_at::date <= d::date)`;
 
 export const QUERY_PRESETS: QueryPreset[] = [
   {
@@ -40,19 +48,10 @@ export const QUERY_PRESETS: QueryPreset[] = [
     panelType: "chart",
     chartType: "line",
     scopes: ["project", "integration"],
-    query: `SELECT to_char(day, 'YYYY-MM-DD') AS day, SUM(delta) OVER (ORDER BY day::date) AS remaining_tasks
-FROM (
-  SELECT created_at::date AS day, 1 AS delta
-  FROM tasks
-  WHERE project_id = {{project_id}} AND sprint_id = ${ACTIVE_SPRINT} AND deleted_at IS NULL
-  UNION ALL
-  SELECT t.updated_at::date AS day, -1 AS delta
-  FROM tasks t
-  JOIN task_statuses ts ON ts.id = t.status_id
-  WHERE t.project_id = {{project_id}} AND t.sprint_id = ${ACTIVE_SPRINT}
-    AND ts.category = 'done' AND t.deleted_at IS NULL
-) events
-ORDER BY day`,
+    query: `SELECT to_char(d::date, 'YYYY-MM-DD') AS day,
+  ${SCOPE_BY_DAY}
+  - ${DONE_BY_DAY} AS remaining_tasks
+${ACTIVE_SPRINT_DAYS}`,
   },
   {
     id: "burnup-active-sprint",
@@ -61,21 +60,10 @@ ORDER BY day`,
     panelType: "chart",
     chartType: "line",
     scopes: ["project", "integration"],
-    query: `SELECT to_char(day, 'YYYY-MM-DD') AS day,
-       SUM(scope_delta) OVER (ORDER BY day::date) AS total_scope,
-       SUM(done_delta) OVER (ORDER BY day::date) AS completed
-FROM (
-  SELECT created_at::date AS day, 1 AS scope_delta, 0 AS done_delta
-  FROM tasks
-  WHERE project_id = {{project_id}} AND sprint_id = ${ACTIVE_SPRINT} AND deleted_at IS NULL
-  UNION ALL
-  SELECT t.updated_at::date AS day, 0 AS scope_delta, 1 AS done_delta
-  FROM tasks t
-  JOIN task_statuses ts ON ts.id = t.status_id
-  WHERE t.project_id = {{project_id}} AND t.sprint_id = ${ACTIVE_SPRINT}
-    AND ts.category = 'done' AND t.deleted_at IS NULL
-) events
-ORDER BY day`,
+    query: `SELECT to_char(d::date, 'YYYY-MM-DD') AS day,
+  ${SCOPE_BY_DAY} AS total_scope,
+  ${DONE_BY_DAY} AS completed
+${ACTIVE_SPRINT_DAYS}`,
   },
   {
     id: "tasks-by-status",
