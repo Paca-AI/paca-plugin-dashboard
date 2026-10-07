@@ -58,7 +58,9 @@ Every panel tool needs a `viewId`. Get one first:
 
 - Exactly one statement, and it must start with `SELECT` or `WITH`. No `INSERT`/`UPDATE`/`DELETE`/`DROP`/`ALTER`/`CREATE`/`GRANT`/`TRUNCATE`/`COPY`/`CALL`/`EXPLAIN`/`VACUUM`, and nothing after a trailing `;`.
 - No `information_schema`/`pg_catalog`/`pg_*` introspection, `dblink`, `lo_*`.
-- **Project and integration-scope queries must contain the literal placeholder `{{project_id}}`** somewhere in a `WHERE`/`ON`/`HAVING` clause (e.g. `WHERE t.project_id = {{project_id}}`) — this is what scopes the query to the caller's own project; the guard substitutes it with a bound `$1` server-side. Never write `$1` yourself — it's reserved and will be rejected.
+- **Project and integration-scope queries must contain the literal placeholder `{{project_id}}` exactly once, as a top-level equality filter against a `project_id` column** (e.g. `WHERE t.project_id = {{project_id}}`), never inside a subquery and never next to a bare `OR` — this is what scopes the query to the caller's own project; the guard substitutes it with a bound `$1` server-side. Select per-project rows in the outer query and keep subqueries correlated to it instead of repeating the placeholder. Never write `$1` yourself — it's reserved and will be rejected.
+- No compound SELECTs: `UNION`, `INTERSECT` and `EXCEPT` are rejected (a second branch would escape the project filter). Build time series with `generate_series` and correlated `COUNT(*)` subqueries instead — see the burndown preset.
+- A query that reads a table with sensitive columns (e.g. `agents`, `users`) may use subqueries only as `IN`/`EXISTS`/`ANY`/`ALL`/`SOME` operands; join those tables at the top level instead.
 - **Admin-scope queries must NOT contain `{{project_id}}`** — they're intentionally cross-project.
 - A `LIMIT 500` is appended automatically if the query doesn't already declare one — don't rely on getting more than 500 rows back.
 - This is a pattern-based guard, not a full SQL parser: prefer straightforward SELECTs over cleverness that might trip a keyword match.
@@ -147,24 +149,17 @@ GROUP BY s.name, s.start_date
 ORDER BY s.start_date
 ```
 
-**Burndown (active sprint)** (line chart) — remaining open tasks per day:
+**Burndown (active sprint)** (line chart) — remaining open tasks per day of the most recently started active sprint:
 ```sql
-SELECT to_char(day, 'YYYY-MM-DD') AS day, SUM(delta) OVER (ORDER BY day::date) AS remaining_tasks
-FROM (
-  SELECT created_at::date AS day, 1 AS delta
-  FROM tasks
-  WHERE project_id = {{project_id}}
-    AND sprint_id = (SELECT id FROM sprints WHERE project_id = {{project_id}} AND status = 'active' ORDER BY start_date DESC LIMIT 1)
-    AND deleted_at IS NULL
-  UNION ALL
-  SELECT t.updated_at::date AS day, -1 AS delta
-  FROM tasks t
-  JOIN task_statuses ts ON ts.id = t.status_id
-  WHERE t.project_id = {{project_id}}
-    AND t.sprint_id = (SELECT id FROM sprints WHERE project_id = {{project_id}} AND status = 'active' ORDER BY start_date DESC LIMIT 1)
-    AND ts.category = 'done' AND t.deleted_at IS NULL
-) events
-ORDER BY day
+SELECT to_char(d::date, 'YYYY-MM-DD') AS day,
+  (SELECT COUNT(*) FROM tasks t WHERE t.sprint_id = s.id AND t.deleted_at IS NULL AND t.created_at::date <= d::date)
+  - (SELECT COUNT(*) FROM tasks t JOIN task_statuses ts ON ts.id = t.status_id
+     WHERE t.sprint_id = s.id AND ts.category = 'done' AND t.deleted_at IS NULL AND t.updated_at::date <= d::date) AS remaining_tasks
+FROM sprints s
+CROSS JOIN generate_series(s.start_date::date, CURRENT_DATE, INTERVAL '1 day') AS d
+WHERE s.project_id = {{project_id}} AND s.status = 'active'
+  AND s.start_date = (SELECT MAX(s2.start_date) FROM sprints s2 WHERE s2.project_id = s.project_id AND s2.status = 'active')
+ORDER BY d
 ```
 
 **Admin: tasks by project** (bar chart, instance-wide):
