@@ -136,35 +136,28 @@ func (p *dashboardPlugin) previewAdminQuery(req *plugin.Request, res *plugin.Res
 // ("project" | "integration" | "admin" — a data-model value describing
 // which kind of dashboard the row is, NOT a permission scope; the
 // permission system itself only ever has two scopes, "project" and
-// "global", set on the requirePermissions/customPermissions entries in
+// "global", set on the requireActions/customPermissions entries in
 // plugin.json). A single permission decides the answer here — not two —
-// which is exactly why the manifest's own requirePermissions floor on
-// these routes is deliberately just projects.read rather than
-// projects.write: requirePermissions ANDs every listed permission, so if
-// the manifest floor were projects.write, a role granted only
-// dashboard.manage would 403 at the middleware layer before this in-handler
+// which is exactly why the manifest's own requireActions floor on
+// these routes is deliberately just projects:read rather than
+// projects:write: requireActions ANDs every listed permission, so if
+// the manifest floor were projects:write, a role granted only
+// dashboard:manage would 403 at the middleware layer before this in-handler
 // check ever ran, silently defeating the point of a dedicated permission.
 //
-//   - viewScope == "project": requires dashboard.manage (a project-scope
-//     permission, i.e. checked against the caller's per-project permission
-//     map).
-//   - viewScope == "integration": requires views.write instead of
-//     dashboard.manage — an integration dashboard is embedded in, and
-//     shares the write bar of, the view that hosts it. views.write is
-//     exactly the permission that already lets an ordinary Editor create
-//     that hosting view in the first place; requiring anything higher here
-//     would be a dead end (create the view, never populate it). Also a
-//     project-scope permission.
+//   - viewScope == "project" or "integration": requires dashboard:manage
+//     (a project-scope permission, i.e. checked against the caller's
+//     per-project permission map). An embedded dashboard is edited with the
+//     dashboard's own permission, not the write bar of the view hosting it:
+//     holding views:write lets someone create the view, not change what the
+//     dashboard shows.
 //   - viewScope == "admin": never reaches this function — loadViewWithPanels
 //     only lets projectID == "" through the admin routes, which are already
-//     fully gated at the manifest level by dashboard.manage checked at
+//     fully gated at the manifest level by dashboard:manage checked at
 //     permission scope "global" (not "admin" — there is no such permission
 //     scope).
-func (p *dashboardPlugin) canManagePanel(viewScope string) bool {
-	if viewScope == "integration" {
-		return p.perm.Check("views.write")
-	}
-	return p.perm.Check("dashboard.manage")
+func (p *dashboardPlugin) canManagePanel(_ string) bool {
+	return p.perm.Check("dashboard:manage")
 }
 
 // requireManagePanel enforces canManagePanel for view, writing the shared
@@ -456,11 +449,11 @@ func (p *dashboardPlugin) runPanelQueryForView(req *plugin.Request, res *plugin.
 // editor can show a live preview before the user hits Save.
 func (p *dashboardPlugin) previewQuery(req *plugin.Request, res *plugin.Response, requireProjectScope bool) {
 	// The admin path (requireProjectScope == false) is already fully gated
-	// at the manifest level (dashboard.manage, global scope) — no view to
+	// at the manifest level (dashboard:manage, global scope) — no view to
 	// resolve a scope from here, so this only applies the project-scope
-	// check. dashboard.manage's own description promises it covers "running
+	// check. dashboard:manage's own description promises it covers "running
 	// query previews while authoring" panels, so this must hold even though
-	// the manifest's own floor is the non-restrictive projects.read (same
+	// the manifest's own floor is the non-restrictive projects:read (same
 	// reasoning as canManagePanel).
 	if requireProjectScope && !p.canManagePanel("project") {
 		res.Error(403, "you don't have permission to manage this dashboard")

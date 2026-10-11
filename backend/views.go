@@ -24,7 +24,7 @@ import (
 // project's single dashboard, creating an empty one on first visit.
 func (p *dashboardPlugin) getOrCreateProjectView(req *plugin.Request, res *plugin.Response) {
 	// Defense-in-depth: this route is already gated at the manifest level
-	// (requirePermissions dashboard.view), but every other project-scope
+	// (requireActions dashboard:view), but every other project-scope
 	// entry point re-checks in-handler too (see loadViewWithPanels below),
 	// so this one shouldn't be the sole exception if the manifest is ever
 	// misedited.
@@ -39,6 +39,7 @@ func (p *dashboardPlugin) getOrCreateProjectView(req *plugin.Request, res *plugi
 		res.Error(500, "failed to load project dashboard")
 		return
 	}
+	view.CanManage = p.canManageView(view.Scope)
 	ok(res, view)
 }
 
@@ -54,6 +55,7 @@ func (p *dashboardPlugin) getOrCreateAdminView(req *plugin.Request, res *plugin.
 		res.Error(500, "failed to load admin dashboard")
 		return
 	}
+	view.CanManage = p.canManageView(view.Scope)
 	ok(res, view)
 }
 
@@ -68,8 +70,8 @@ func (p *dashboardPlugin) getOrCreateAdminView(req *plugin.Request, res *plugin.
 // just keyed by hostViewId instead of projectID/"".
 func (p *dashboardPlugin) getOrCreateIntegrationView(req *plugin.Request, res *plugin.Response) {
 	// Defense-in-depth, mirroring getOrCreateProjectView above: this route
-	// is already gated at the manifest level (requirePermissions
-	// dashboard.view) so this one shouldn't be the sole exception if the
+	// is already gated at the manifest level (requireActions
+	// dashboard:view) so this one shouldn't be the sole exception if the
 	// manifest is ever misedited.
 	if !p.canViewDashboard() {
 		res.Error(403, "you don't have permission to view this dashboard")
@@ -87,6 +89,7 @@ func (p *dashboardPlugin) getOrCreateIntegrationView(req *plugin.Request, res *p
 		res.Error(500, "failed to load dashboard view")
 		return
 	}
+	view.CanManage = p.canManageView(view.Scope)
 	ok(res, view)
 }
 
@@ -152,6 +155,7 @@ func (p *dashboardPlugin) getView(req *plugin.Request, res *plugin.Response) {
 	if !loaded {
 		return
 	}
+	view.CanManage = p.canManageView(view.Scope)
 	ok(res, view)
 }
 
@@ -271,7 +275,7 @@ func (p *dashboardPlugin) loadViewWithPanels(viewID, projectID string, res *plug
 	}
 
 	// Permission check: views whose dashboard_views.scope is "project" or
-	// "integration" require dashboard.view/dashboard.manage — a
+	// "integration" require dashboard:view/dashboard:manage — a
 	// project-scope permission pair, checked against the caller's
 	// per-project permission map. The manifest already enforces this
 	// uniformly for every route that reaches here (see plugin.json); this
@@ -279,8 +283,8 @@ func (p *dashboardPlugin) loadViewWithPanels(viewID, projectID string, res *plug
 	// enforcement if the manifest is ever misedited. Rows with
 	// dashboard_views.scope == "admin" are excluded from this check: they
 	// only ever reach here via the admin routes (projectID == ""), which
-	// are already fully gated at the manifest level by dashboard.view/
-	// dashboard.manage checked at permission scope "global" — not "admin";
+	// are already fully gated at the manifest level by dashboard:view/
+	// dashboard:manage checked at permission scope "global" — not "admin";
 	// the permission system has no such scope, dashboard_views.scope is an
 	// unrelated data-model value that happens to share the word "admin".
 	if v.Scope != "admin" && !p.canViewDashboard() {
@@ -299,13 +303,25 @@ func (p *dashboardPlugin) loadViewWithPanels(viewID, projectID string, res *plug
 }
 
 // canViewDashboard reports whether the caller may view a project-scope
-// dashboard — dashboard.view, or dashboard.manage as a superset (a caller
+// dashboard — dashboard:view, or dashboard:manage as a superset (a caller
 // who can manage a dashboard can always view it too). Single source of
 // truth for that view-or-manage relationship, mirroring canManagePanel's
 // shape in panels.go, so the three call sites above stay in sync rather
 // than each hand-rolling the same two-permission check.
 func (p *dashboardPlugin) canViewDashboard() bool {
-	return p.perm.Check("dashboard.view") || p.perm.Check("dashboard.manage")
+	return p.perm.Check("dashboard:view") || p.perm.Check("dashboard:manage")
+}
+
+// canManageView reports whether the caller may edit the panels of a view of
+// the given scope, so the UI can hide controls the write routes would refuse.
+// The admin scope's routes are gated by dashboard:manage at the manifest, so
+// it is checked here directly (globally); the others go through
+// canManagePanel. The write handlers still enforce it themselves.
+func (p *dashboardPlugin) canManageView(viewScope string) bool {
+	if viewScope == "admin" {
+		return p.perm.Check("dashboard:manage")
+	}
+	return p.canManagePanel(viewScope)
 }
 
 func viewFromRow(cols []string, row []any) dashboardView {

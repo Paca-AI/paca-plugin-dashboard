@@ -41,7 +41,7 @@ function Content({ api }: AdminPageProps) {
 
       {viewQuery.isLoading && <p className="text-sm text-muted-foreground">Loading dashboard…</p>}
       {viewQuery.isError && <p className="text-sm text-destructive">Failed to load the admin dashboard.</p>}
-      {viewQuery.data && <DashboardBody api={api} scope="admin" view={viewQuery.data} canEdit />}
+      {viewQuery.data && <DashboardBody api={api} scope="admin" view={viewQuery.data} canEdit={viewQuery.data.can_manage} />}
     </div>
   );
 }

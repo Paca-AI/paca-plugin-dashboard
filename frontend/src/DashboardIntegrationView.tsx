@@ -36,7 +36,7 @@ function Content({ api, viewId }: ViewExtensionProps) {
   return (
     <div className="flex flex-col gap-4 p-4">
       {viewQuery.data && (
-        <DashboardBody api={api} scope="integration" view={viewQuery.data} canEdit />
+        <DashboardBody api={api} scope="integration" view={viewQuery.data} canEdit={viewQuery.data.can_manage} />
       )}
     </div>
   );

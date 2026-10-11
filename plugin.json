@@ -2,33 +2,21 @@
   "id": "com.paca.dashboard",
   "displayName": "Dashboard",
   "description": "Customizable panel-based dashboard builder (charts, tables, text) across the project dashboard page, the admin dashboard page, and a single dashboard per Integration-page view (backlog/sprint/timeline).",
-  "version": "0.4.0",
-  "minCoreVersion": "v0.13.3",
+  "version": "0.4.1",
+  "minCoreVersion": "v0.19.0",
   "permissions": ["db.read", "db.write", "events.subscribe", "cache"],
   "customPermissions": [
     {
-      "key": "dashboard.view",
+      "key": "dashboard:view",
+      "scope": "both",
       "label": "View dashboard",
-      "description": "View the project's \"Dashboard\" page and its panels. Does not affect the per-view dashboards embedded in Backlog/Sprint/Timeline pages, which any project member can already see.",
-      "scope": "project"
+      "description": "View the Dashboard page and its panels. Grant on a project resource for the project dashboard, or on a global resource for the instance-wide cross-project dashboard."
     },
     {
-      "key": "dashboard.manage",
+      "key": "dashboard:manage",
+      "scope": "both",
       "label": "Manage dashboard",
-      "description": "Create, edit, delete, and rearrange panels on the project's \"Dashboard\" page, and run query previews while authoring them.",
-      "scope": "project"
-    },
-    {
-      "key": "dashboard.view",
-      "label": "View dashboard",
-      "description": "View the admin-sidebar \"Dashboard\" page — the instance-wide, cross-project dashboard.",
-      "scope": "global"
-    },
-    {
-      "key": "dashboard.manage",
-      "label": "Manage dashboard",
-      "description": "Create, edit, delete, and rearrange panels on the admin-sidebar \"Dashboard\" page, and run query previews while authoring them.",
-      "scope": "global"
+      "description": "Create, edit, delete, and rearrange panels on a Dashboard page, and run query previews while authoring them. Grant on a project resource for the project dashboard, or on a global resource for the instance-wide dashboard."
     }
   ],
   "backend": {
@@ -40,7 +28,7 @@
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
-          { "name": "requirePermissions", "scope": "project", "permissions": ["dashboard.view"] }
+          { "name": "requireActions", "scope": "project", "actions": ["dashboard:view"] }
         ]
       },
       {
@@ -49,7 +37,7 @@
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
-          { "name": "requirePermissions", "scope": "project", "permissions": ["dashboard.view"] }
+          { "name": "requireActions", "scope": "project", "actions": ["dashboard:view"] }
         ]
       },
       {
@@ -58,7 +46,7 @@
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
-          { "name": "requirePermissions", "scope": "project", "permissions": ["dashboard.view"] }
+          { "name": "requireActions", "scope": "project", "actions": ["dashboard:view"] }
         ]
       },
       {
@@ -67,7 +55,7 @@
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
-          { "name": "requirePermissions", "scope": "project", "permissions": ["dashboard.view"] }
+          { "name": "requireActions", "scope": "project", "actions": ["dashboard:manage"] }
         ]
       },
       {
@@ -76,7 +64,7 @@
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
-          { "name": "requirePermissions", "scope": "project", "permissions": ["dashboard.view"] }
+          { "name": "requireActions", "scope": "project", "actions": ["dashboard:manage"] }
         ]
       },
       {
@@ -85,7 +73,7 @@
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
-          { "name": "requirePermissions", "scope": "project", "permissions": ["dashboard.view"] }
+          { "name": "requireActions", "scope": "project", "actions": ["dashboard:manage"] }
         ]
       },
       {
@@ -94,7 +82,7 @@
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
-          { "name": "requirePermissions", "scope": "project", "permissions": ["dashboard.view"] }
+          { "name": "requireActions", "scope": "project", "actions": ["dashboard:manage"] }
         ]
       },
       {
@@ -103,7 +91,7 @@
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
-          { "name": "requirePermissions", "scope": "project", "permissions": ["dashboard.view"] }
+          { "name": "requireActions", "scope": "project", "actions": ["dashboard:view"] }
         ]
       },
       {
@@ -112,7 +100,7 @@
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
-          { "name": "requirePermissions", "scope": "project", "permissions": ["dashboard.view"] }
+          { "name": "requireActions", "scope": "project", "actions": ["dashboard:manage"] }
         ]
       },
       {
@@ -121,7 +109,7 @@
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
-          { "name": "requirePermissions", "scope": "global", "permissions": ["dashboard.view"] }
+          { "name": "requireActions", "scope": "global", "actions": ["dashboard:view"] }
         ]
       },
       {
@@ -130,7 +118,7 @@
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
-          { "name": "requirePermissions", "scope": "global", "permissions": ["dashboard.manage"] }
+          { "name": "requireActions", "scope": "global", "actions": ["dashboard:manage"] }
         ]
       },
       {
@@ -139,7 +127,7 @@
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
-          { "name": "requirePermissions", "scope": "global", "permissions": ["dashboard.manage"] }
+          { "name": "requireActions", "scope": "global", "actions": ["dashboard:manage"] }
         ]
       },
       {
@@ -148,7 +136,7 @@
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
-          { "name": "requirePermissions", "scope": "global", "permissions": ["dashboard.manage"] }
+          { "name": "requireActions", "scope": "global", "actions": ["dashboard:manage"] }
         ]
       },
       {
@@ -157,7 +145,7 @@
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
-          { "name": "requirePermissions", "scope": "global", "permissions": ["dashboard.manage"] }
+          { "name": "requireActions", "scope": "global", "actions": ["dashboard:manage"] }
         ]
       },
       {
@@ -166,7 +154,7 @@
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
-          { "name": "requirePermissions", "scope": "global", "permissions": ["dashboard.view"] }
+          { "name": "requireActions", "scope": "global", "actions": ["dashboard:view"] }
         ]
       },
       {
@@ -175,7 +163,7 @@
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
-          { "name": "requirePermissions", "scope": "global", "permissions": ["dashboard.manage"] }
+          { "name": "requireActions", "scope": "global", "actions": ["dashboard:manage"] }
         ]
       }
     ]
@@ -208,7 +196,7 @@
         "icon": "LayoutDashboard",
         "component": "ProjectDashboardPage",
         "order": 5,
-        "requiredPermission": "dashboard.view"
+        "requiredPermission": "dashboard:view"
       },
       {
         "scope": "admin",
@@ -217,7 +205,7 @@
         "icon": "LayoutDashboard",
         "component": "AdminDashboardPage",
         "order": 5,
-        "requiredPermission": "dashboard.view"
+        "requiredPermission": "dashboard:view"
       }
     ]
   },
