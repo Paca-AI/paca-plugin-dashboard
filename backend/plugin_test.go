@@ -21,8 +21,8 @@ func setupPlugin(t *testing.T) *plugintest.Context {
 	// Default test caller has full dashboard access; tests for the
 	// permission gate itself (TestLoadView_RequiresDashboardView etc.)
 	// explicitly revoke these to exercise the denied path.
-	tc.Permissions.Grant("dashboard.view")
-	tc.Permissions.Grant("dashboard.manage")
+	tc.Permissions.Grant("dashboard:view")
+	tc.Permissions.Grant("dashboard:manage")
 
 	tc.DB.SeedRows("dashboard_views",
 		[]string{"id", "project_id", "scope", "host_view_id", "name", "created_by", "created_at", "updated_at"},
@@ -261,53 +261,53 @@ func TestGetView_CrossProjectRejected(t *testing.T) {
 	}
 }
 
-// ── Dashboard permission gate (dashboard.view / dashboard.manage) ───────────
+// ── Dashboard permission gate (dashboard:view / dashboard:manage) ───────────
 
 func TestGetOrCreateProjectView_RequiresDashboardView(t *testing.T) {
 	tc := setupPlugin(t)
-	tc.Permissions.Revoke("dashboard.view")
-	tc.Permissions.Revoke("dashboard.manage")
+	tc.Permissions.Revoke("dashboard:view")
+	tc.Permissions.Revoke("dashboard:manage")
 
 	res := tc.Call("GET", "/dashboard/view", callerReq())
 	if res.StatusCode != 403 {
-		t.Fatalf("expected 403 for a caller with neither dashboard.view nor dashboard.manage, got %d: %s", res.StatusCode, res.BodyString())
+		t.Fatalf("expected 403 for a caller with neither dashboard:view nor dashboard:manage, got %d: %s", res.StatusCode, res.BodyString())
 	}
 }
 
 func TestGetOrCreateProjectView_ManageAloneIsSufficientToView(t *testing.T) {
 	tc := setupPlugin(t)
-	tc.Permissions.Revoke("dashboard.view")
-	// dashboard.manage stays granted (setupPlugin's default) — manage alone
+	tc.Permissions.Revoke("dashboard:view")
+	// dashboard:manage stays granted (setupPlugin's default) — manage alone
 	// must still be enough to load the view.
 
 	res := tc.Call("GET", "/dashboard/view", callerReq())
 	if res.StatusCode != 200 {
-		t.Fatalf("expected 200 for a caller with only dashboard.manage, got %d: %s", res.StatusCode, res.BodyString())
+		t.Fatalf("expected 200 for a caller with only dashboard:manage, got %d: %s", res.StatusCode, res.BodyString())
 	}
 }
 
 // TestGetOrCreateIntegrationView_RequiresDashboardView pins the current
-// design: dashboard.view gates every dashboard surface uniformly, including
+// design: dashboard:view gates every dashboard surface uniformly, including
 // integration-scope dashboards embedded in Backlog/Sprint/Timeline — not
-// just the dedicated project-scope singleton page. Revoking dashboard.view
+// just the dedicated project-scope singleton page. Revoking dashboard:view
 // from a role now hides the whole feature, embedded views included; there
 // is no "always open" carve-out for the embedded surface.
 func TestGetOrCreateIntegrationView_RequiresDashboardView(t *testing.T) {
 	tc := setupPlugin(t)
-	tc.Permissions.Revoke("dashboard.view")
-	tc.Permissions.Revoke("dashboard.manage")
+	tc.Permissions.Revoke("dashboard:view")
+	tc.Permissions.Revoke("dashboard:manage")
 
 	res := tc.Call("GET", "/dashboard/view/:hostViewId",
 		withPathParams(callerReq(), map[string]string{"hostViewId": testHostViewID}))
 	if res.StatusCode != 403 {
-		t.Fatalf("expected 403 for an integration-scope view without dashboard.view, got %d: %s", res.StatusCode, res.BodyString())
+		t.Fatalf("expected 403 for an integration-scope view without dashboard:view, got %d: %s", res.StatusCode, res.BodyString())
 	}
 }
 
 func TestCreatePanel_RequiresDashboardManage(t *testing.T) {
 	tc := setupPlugin(t)
 	view := decodeData[dashboardView](t, tc.Call("GET", "/dashboard/view", callerReq()))
-	tc.Permissions.Revoke("dashboard.manage") // dashboard.view stays granted
+	tc.Permissions.Revoke("dashboard:manage") // dashboard:view stays granted
 
 	res := tc.Call("POST", "/dashboard/views/:viewId/panels",
 		withPathParams(callerReq(), map[string]string{"viewId": view.ID}).
@@ -317,7 +317,7 @@ func TestCreatePanel_RequiresDashboardManage(t *testing.T) {
 				"content": "should be rejected before it's ever validated",
 			}))
 	if res.StatusCode != 403 {
-		t.Fatalf("expected 403 for a caller with dashboard.view but not dashboard.manage, got %d: %s", res.StatusCode, res.BodyString())
+		t.Fatalf("expected 403 for a caller with dashboard:view but not dashboard:manage, got %d: %s", res.StatusCode, res.BodyString())
 	}
 }
 
@@ -568,53 +568,49 @@ func TestRunPanelQuery_ScopesToOwnProject(t *testing.T) {
 }
 
 // TestPreviewQuery_RequiresDashboardManage pins the fix for the
-// query/preview route relying solely on the manifest's projects.read floor
-// with no in-handler check at all — dashboard.manage's own description
+// query/preview route relying solely on the manifest's projects:read floor
+// with no in-handler check at all — dashboard:manage's own description
 // promises it covers "running query previews while authoring" panels, so a
 // caller without it must be rejected here too, not just on save.
 func TestPreviewQuery_RequiresDashboardManage(t *testing.T) {
 	tc := setupPlugin(t)
-	tc.Permissions.Revoke("dashboard.manage")
+	tc.Permissions.Revoke("dashboard:manage")
 
 	res := tc.Call("POST", "/dashboard/query/preview",
 		callerReq().WithJSONBody(map[string]string{
 			"query": "SELECT id FROM tasks WHERE project_id = {{project_id}}",
 		}))
 	if res.StatusCode != 403 {
-		t.Fatalf("expected 403 for a caller without dashboard.manage, got %d: %s", res.StatusCode, res.BodyString())
+		t.Fatalf("expected 403 for a caller without dashboard:manage, got %d: %s", res.StatusCode, res.BodyString())
 	}
 }
 
-// TestCreatePanel_IntegrationScope_RequiresViewsWrite pins the fix for
-// integration-scope panel mutations previously having no permission check
-// at all in-handler (only the manifest's projects.write, which an ordinary
-// Editor — who can create the hosting integration view via views.write —
-// doesn't hold, making the view creatable but never populatable). Panel
-// mutations on an integration view now require views.write specifically,
-// not dashboard.manage — matching the permission that already gates
-// creating the view itself.
-func TestCreatePanel_IntegrationScope_RequiresViewsWrite(t *testing.T) {
+// TestCreatePanel_IntegrationScope_RequiresDashboardManage pins that panel
+// mutations on an embedded (integration) dashboard need dashboard:manage;
+// views:write, which only lets a caller create the hosting view, is not enough.
+func TestCreatePanel_IntegrationScope_RequiresDashboardManage(t *testing.T) {
 	tc := setupPlugin(t)
 	view := decodeData[dashboardView](t, tc.Call("GET", "/dashboard/view/:hostViewId",
 		withPathParams(callerReq(), map[string]string{"hostViewId": testHostViewID})))
-
-	// dashboard.manage alone must NOT be sufficient for an integration view.
-	tc.Permissions.Revoke("views.write")
-	denied := tc.Call("POST", "/dashboard/views/:viewId/panels",
-		withPathParams(callerReq(), map[string]string{"viewId": view.ID}).
-			WithJSONBody(map[string]any{"type": "text", "title": "Notes", "content": "x"}))
-	if denied.StatusCode != 403 {
-		t.Fatalf("expected 403 for an integration view without views.write, got %d: %s", denied.StatusCode, denied.BodyString())
+	body := map[string]any{"type": "text", "title": "Notes", "content": "x"}
+	create := func() *plugin.Response {
+		return tc.Call("POST", "/dashboard/views/:viewId/panels",
+			withPathParams(callerReq(), map[string]string{"viewId": view.ID}).WithJSONBody(body))
 	}
 
-	// views.write alone (without dashboard.manage) must be sufficient.
-	tc.Permissions.Revoke("dashboard.manage")
-	tc.Permissions.Grant("views.write")
-	allowed := tc.Call("POST", "/dashboard/views/:viewId/panels",
-		withPathParams(callerReq(), map[string]string{"viewId": view.ID}).
-			WithJSONBody(map[string]any{"type": "text", "title": "Notes", "content": "x"}))
-	if allowed.StatusCode != 201 {
-		t.Fatalf("expected 201 for an integration view with views.write but not dashboard.manage, got %d: %s", allowed.StatusCode, allowed.BodyString())
+	tc.Permissions.Revoke("dashboard:manage")
+	tc.Permissions.Grant("views:write")
+	if r := create(); r.StatusCode != 403 {
+		t.Fatalf("expected 403 with views:write but not dashboard:manage, got %d: %s", r.StatusCode, r.BodyString())
+	}
+	if v := decodeData[dashboardView](t, tc.Call("GET", "/dashboard/view/:hostViewId",
+		withPathParams(callerReq(), map[string]string{"hostViewId": testHostViewID}))); v.CanManage {
+		t.Fatal("can_manage must be false without dashboard:manage")
+	}
+
+	tc.Permissions.Grant("dashboard:manage")
+	if r := create(); r.StatusCode != 201 {
+		t.Fatalf("expected 201 with dashboard:manage, got %d: %s", r.StatusCode, r.BodyString())
 	}
 }
 

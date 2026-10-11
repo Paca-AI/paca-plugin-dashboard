@@ -25,9 +25,9 @@ type dashboardPanel struct {
 // dashboardView is one dashboard (project/admin/integration scope) with its
 // panels embedded.
 type dashboardView struct {
-	ID         string           `json:"id"`
-	ProjectID  *string          `json:"project_id,omitempty"`
-	Scope      string           `json:"scope"` // "project" | "admin" | "integration"
+	ID        string  `json:"id"`
+	ProjectID *string `json:"project_id,omitempty"`
+	Scope     string  `json:"scope"` // "project" | "admin" | "integration"
 	// HostViewID is set only for scope="integration": the id of the host's
 	// own interaction-view row (a "Dashboard"-type view in Backlog/Sprint/
 	// Timeline) this dashboard belongs to — exactly one dashboard per host
@@ -35,8 +35,11 @@ type dashboardView struct {
 	HostViewID *string          `json:"host_view_id,omitempty"`
 	Name       string           `json:"name"`
 	Panels     []dashboardPanel `json:"panels"`
-	CreatedAt  string           `json:"created_at"`
-	UpdatedAt  string           `json:"updated_at"`
+	// CanManage is whether the caller may add, edit, delete and rearrange
+	// panels on this view. Set per request; the write routes enforce it too.
+	CanManage bool   `json:"can_manage"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 // panelLayoutEntry is one row of a bulk drag/resize layout update.

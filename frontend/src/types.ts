@@ -35,6 +35,9 @@ export interface DashboardView {
   host_view_id?: string | null;
   name: string;
   panels: DashboardPanel[];
+  /** Whether the caller may add/edit/delete/rearrange panels. The backend
+   * enforces it on every write route; this only hides the controls. */
+  can_manage: boolean;
   created_at: string;
   updated_at: string;
 }
