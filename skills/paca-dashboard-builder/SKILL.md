@@ -19,6 +19,12 @@ This plugin (`com.paca.dashboard`) provides a drag-and-drop panel dashboard — 
 
 Use this when asked to create or edit a dashboard, add or arrange panels, or visualize task/sprint/project data. Every panel needs a SQL query except text panels — the safety rules and preset library below exist so you don't have to hand-write raw SQL against an unfamiliar schema.
 
+## Step A — decide what each panel is for
+
+A dashboard is only useful if each panel answers a question someone will act on. Before touching a tool, turn the request into a short list: **question → metric → panel type** (e.g. "Are we on track this sprint?" → remaining tasks per day → line chart; "Where is work piling up?" → tasks per status → bar chart). If the request is vague ("make me a dashboard"), propose 3–5 such panels and let the user pick instead of building everything. Keep it to one metric per panel, name each panel after the question it answers (not "Chart 1"), and stop at roughly six panels per dashboard.
+
+**Editing an existing dashboard:** call `dashboard_get_view` first and keep every panel the user did not mention. `dashboard_update_panel` replaces the whole panel and `dashboard_delete_panel` / `dashboard_delete_admin_panel` are permanent — name the panel and get an explicit yes before deleting, and never delete-and-recreate just to change a title or position.
+
 ## Step 0 — create the host view first (integration-scope dashboards only)
 
 Skip this for the project and admin dashboards — those always exist. An integration-scope dashboard (bound to a Backlog/Sprint/Timeline "Dashboard" view) only exists once that host view has actually been created; `dashboard_get_view({projectId, hostViewId})` needs an existing `hostViewId`, it does **not** create the host-level view itself.
@@ -116,7 +122,7 @@ GROUP BY tt.name
 ORDER BY task_count DESC
 ```
 
-**Open tasks by assignee** (bar chart):
+**Open tasks by assignee** (bar chart) — the label is the project-member **id**, not a name; when you summarize the result, map ids to people with `list_project_members`:
 ```sql
 SELECT COALESCE(pm.id::text, 'Unassigned') AS assignee, COUNT(DISTINCT t.id) AS open_tasks
 FROM tasks t
@@ -179,7 +185,7 @@ ORDER BY task_count DESC
 3. For each panel: pick a preset if one fits, else write and preview a query (Step 2), then create the panel (Step 3).
 4. Verify each panel's data (Step 4).
 5. If several panels were added at once, issue one `dashboard_update_panel_layout` call arranging all of them (e.g. two-per-row at width 6, or three-per-row at width 4) rather than leaving everything stacked at the default position.
-6. Summarize what was built in one or two sentences — don't restate every tool call.
+6. Summarize what was built in one or two sentences — which question each panel answers, and anything that came back empty or surprising — rather than restating every tool call.
 
 ## Constraints
 

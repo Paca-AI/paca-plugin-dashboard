@@ -293,7 +293,9 @@ forbidden keywords, the implicit `LIMIT 500`), a schema reference for the
 host's task/sprint tables, and a library of copy-paste preset queries (status
 breakdowns, burndown/burnup, workload, overdue tasks, sprint velocity) so the
 agent doesn't have to hand-write SQL against an unfamiliar schema. Registered
-in `plugin.json`'s `skills.names`.
+in `plugin.json`'s `skills.names`, and routed to from the core `paca` skill by the
+`skills.routes` entry (the `paca` router adds a row for it only while this plugin
+is installed and enabled).
 
 ---
 
